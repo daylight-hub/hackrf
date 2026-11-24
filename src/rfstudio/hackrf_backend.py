@@ -95,10 +95,7 @@ def probe_in_process(search_dirs: list[str]) -> ProbeResult:
     from . import runner
 
     res = ProbeResult()
-    from pathlib import Path
-
-    lib_name = "hackrf.dll" if paths.IS_WINDOWS else "libhackrf.so.0"
-    lib_dir = next((d for d in search_dirs if (Path(d) / lib_name).exists()), None)
+    lib_dir = next((d for d in search_dirs if paths.find_hackrf_lib(d)), None)
     runner.install_hackrf_compat(lib_dir)
 
     try:

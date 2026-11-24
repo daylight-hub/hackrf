@@ -108,3 +108,16 @@ def test_probe_cli_runs():
     res = hackrf_backend.probe([])
     assert isinstance(res, hackrf_backend.ProbeResult)
     assert not any("Probe failed" in e for e in res.errors), res.errors
+
+
+def test_windows_library_names_include_conda_forge_name():
+    assert "hackrf-0.dll" in runner._HACKRF_ALIASES
+    assert runner._WINDOWS_NAMES[0] == "hackrf-0.dll"
+
+
+def test_find_hackrf_lib(tmp_path):
+    from rfstudio import paths
+    assert paths.find_hackrf_lib(tmp_path) is None
+    name = paths.HACKRF_LIB_NAMES[0]
+    (tmp_path / name).write_bytes(b"")
+    assert paths.find_hackrf_lib(tmp_path).name == name

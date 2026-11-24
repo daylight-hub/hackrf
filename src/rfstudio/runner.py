@@ -7,8 +7,8 @@ directly by an *external* Python interpreter as well as by the bundled one::
 
 It also installs a small compatibility layer for ``pyhackrf2``: that package
 hard-codes ``CDLL("libhackrf.so.0")``, which only exists on Linux. The shim
-redirects the load to the right library for the platform (``hackrf.dll`` on
-Windows, bundled or system copies on Linux) and calls ``hackrf_init()``.
+redirects the load to the right library for the platform (``hackrf-0.dll`` /
+``hackrf.dll`` on Windows, bundled or system copies on Linux) and calls ``hackrf_init()``.
 """
 
 from __future__ import annotations
@@ -18,7 +18,9 @@ import os
 import sys
 import types
 
-_HACKRF_ALIASES = {"libhackrf.so.0", "libhackrf.so", "libhackrf", "hackrf", "hackrf.dll", "libhackrf.dll"}
+_HACKRF_ALIASES = {"libhackrf.so.0", "libhackrf.so", "libhackrf", "hackrf", "hackrf.dll", "hackrf-0.dll",
+                   "libhackrf.dll", "libhackrf-0.dll"}
+_WINDOWS_NAMES = ("hackrf-0.dll", "hackrf.dll", "libhackrf.dll", "libhackrf-0.dll")
 _installed = False
 loaded_library: str | None = None
 
@@ -30,8 +32,8 @@ def _library_candidates(hackrf_dir: str | None) -> list[str]:
     cands: list[str] = []
     if sys.platform.startswith("win"):
         for d in dirs:
-            cands += [os.path.join(d, "hackrf.dll"), os.path.join(d, "libhackrf.dll")]
-        cands += ["hackrf.dll", "libhackrf.dll"]
+            cands += [os.path.join(d, n) for n in _WINDOWS_NAMES]
+        cands += list(_WINDOWS_NAMES)
     elif sys.platform == "darwin":
         cands += ["libhackrf.0.dylib", "libhackrf.dylib",
                   "/opt/homebrew/lib/libhackrf.dylib", "/usr/local/lib/libhackrf.dylib"]

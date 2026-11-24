@@ -79,6 +79,23 @@ def assets_dir() -> Path:
     return resource_root() / "assets"
 
 
+# libhackrf file names: conda-forge's Windows build is hackrf-0.dll, other builds hackrf.dll
+HACKRF_LIB_NAMES = (
+    ("hackrf-0.dll", "hackrf.dll", "libhackrf.dll", "libhackrf-0.dll") if IS_WINDOWS
+    else ("libhackrf.so.0", "libhackrf.so")
+)
+
+
+def find_hackrf_lib(folder: str | Path | None) -> Path | None:
+    if not folder:
+        return None
+    for name in HACKRF_LIB_NAMES:
+        cand = Path(folder) / name
+        if cand.is_file():
+            return cand
+    return None
+
+
 def bundled_hackrf_dir() -> Path | None:
     """HackRF native tools/libraries shipped with the build (if any)."""
     root = resource_root()

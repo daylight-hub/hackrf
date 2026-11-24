@@ -134,10 +134,10 @@ def _windows_devices() -> list[dict]:
 
 def windows_status() -> DriverStatus:
     bundled = paths.bundled_hackrf_dir()
-    dll = bundled / "hackrf.dll" if bundled else None
+    dll = paths.find_hackrf_lib(bundled)
     devices = _windows_devices()
     checks = [
-        Check("hackrf.dll", bool(dll and dll.exists()), str(dll) if dll and dll.exists() else "not bundled"),
+        Check("libhackrf DLL", dll is not None, str(dll) if dll else "not bundled"),
         Check("hackrf tools", bool(bundled and (bundled / "hackrf_transfer.exe").exists()),
               str(bundled) if bundled else "not bundled"),
     ]

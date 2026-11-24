@@ -57,7 +57,7 @@ def prepare_launch(settings: Settings, script: str | Path) -> LaunchSpec:
     if hackrf_dirs:
         env["RFSTUDIO_HACKRF_DIR"] = hackrf_dirs[-1] if len(hackrf_dirs) > 1 else hackrf_dirs[0]
         for d in hackrf_dirs:
-            if (Path(d) / ("hackrf.dll" if paths.IS_WINDOWS else "libhackrf.so.0")).exists():
+            if paths.find_hackrf_lib(d):
                 env["RFSTUDIO_HACKRF_DIR"] = d
                 break
     env["RFSTUDIO_SCRIPT"] = str(script)
