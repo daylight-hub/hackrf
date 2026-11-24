@@ -102,6 +102,11 @@ QToolTip {{ background: {p.surface2}; color: {p.text}; border: 1px solid {p.bord
 #optionDesc, #muted {{ color: {p.muted}; }}
 #modifiedDot {{ color: {p.accent}; font-size: 8pt; }}
 #rowDivider {{ background: {p.border}; max-height: 1px; min-height: 1px; }}
+#toggleTile {{ background: {p.surface2}; border: 1px solid {p.border}; border-radius: 10px; }}
+#toggleTile:hover {{ border-color: {p.muted}; }}
+#toggleTile[danger="true"] {{ border-color: {p.danger}; }}
+#txBadge {{ color: #ffffff; background: {p.danger}; border-radius: 6px; padding: 0px 6px; font-size: 8pt; font-weight: 700; }}
+#subTitle {{ color: {p.muted}; font-size: 8.5pt; font-weight: 700; letter-spacing: 1px; }}
 #scriptName {{ font-size: 15pt; font-weight: 700; }}
 #statValue {{ font-size: 12.5pt; font-weight: 700; }}
 #statLabel {{ color: {p.muted}; font-size: 8.5pt; letter-spacing: 1px; }}
@@ -161,6 +166,12 @@ QHeaderView::section {{ background: {p.surface2}; color: {p.muted}; border: none
     padding: 6px 8px; font-weight: 700; font-size: 8.5pt; }}
 QTableCornerButton::section {{ background: {p.surface2}; border: none; }}
 
+QTabWidget::pane {{ border: none; }}
+QTabBar::tab {{ background: transparent; color: {p.muted}; padding: 7px 14px; margin-right: 4px;
+    border-bottom: 2px solid transparent; font-weight: 600; }}
+QTabBar::tab:selected {{ color: {p.text}; border-bottom: 2px solid {p.accent}; }}
+QTabBar::tab:hover {{ color: {p.text}; }}
+QTableWidget {{ alternate-background-color: {p.surface2}; }}
 QMenu {{ background: {p.surface}; border: 1px solid {p.border}; border-radius: 8px; padding: 6px; }}
 QMenu::item {{ padding: 6px 22px 6px 12px; border-radius: 6px; }}
 QMenu::item:selected {{ background: {p.surface2}; }}

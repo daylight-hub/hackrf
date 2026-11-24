@@ -162,3 +162,77 @@ def test_example_runs_on_simulated_hardware(mock_lib, tmp_path):
     out = run_with_mock(mock_lib, tmp_path, src)
     assert out.returncode == 0, out.stderr
     assert "HackRF opened" in out.stdout and "(hardware)" in out.stdout
+
+
+def test_read_only_folder_runs_from_writable_copy(tmp_path, monkeypatch):
+    """Mirrors a real report: BACKUP_DIR = Path(__file__).parent / 'frequency_backups' in /opt."""
+    monkeypatch.setattr(session, "_writable", lambda folder: False)
+    bundled = tmp_path / "opt" / "scripts"
+    bundled.mkdir(parents=True)
+    (bundled / "helper.py").write_text("VALUE = 7\n")
+    (bundled / "presets.json").write_text('{"f": 433}')
+    script = bundled / "tx_app.py"
+    script.write_text(
+        "import json\nfrom pathlib import Path\nimport helper\n"
+        "BACKUP_DIR = Path(__file__).parent / 'frequency_backups'\n"
+        "BACKUP_DIR.mkdir(exist_ok=True)\n"
+        "(BACKUP_DIR / 'b.txt').write_text('saved')\n"
+        "print('preset', json.loads((Path(__file__).parent / 'presets.json').read_text())['f'], helper.VALUE)\n"
+        "(Path(__file__).parent / 'presets.json').write_text('{\"f\": 915}')\n"
+    )
+    workdir = Path.home() / "RF Script Studio" / "tx_app"
+    for expected in ("preset 433 7", "preset 915 7"):  # 2nd run keeps the script's own edits
+        spec = session.prepare_launch(config.Settings(), script)
+        out = subprocess.run(spec.argv, cwd=spec.cwd, env=spec.env, capture_output=True, text=True, timeout=60)
+        assert out.returncode == 0, out.stderr
+        assert expected in out.stdout
+    assert (workdir / "frequency_backups" / "b.txt").read_text() == "saved"
+    assert not (bundled / "frequency_backups").exists()
+    # an app update to the script itself is picked up
+    script.write_text(script.read_text().replace("print('preset'", "print('v2 preset'"))
+    spec = session.prepare_launch(config.Settings(), script)
+    out = subprocess.run(spec.argv, cwd=spec.cwd, env=spec.env, capture_output=True, text=True, timeout=60)
+    assert "v2 preset 915 7" in out.stdout
+
+
+def test_traceback_starts_at_user_script(tmp_path):
+    script = tmp_path / "boom2.py"
+    script.write_text("def f():\n    raise PermissionError('denied')\n\nf()\n")
+    spec = session.prepare_launch(config.Settings(), script)
+    out = subprocess.run(spec.argv, cwd=spec.cwd, env=spec.env, capture_output=True, text=True, timeout=60)
+    lines = out.stderr.strip().splitlines()
+    assert lines[0] == "Traceback (most recent call last):"
+    assert str(script) in lines[1] and "runner.py" not in out.stderr
+
+
+@pytest.mark.parametrize("how", ["token", "eof"])
+def test_stop_pipe_runs_script_cleanup(tmp_path, how):
+    """Windows-style stop: token on stdin (or the app vanishing = EOF) -> KeyboardInterrupt."""
+    script = tmp_path / "tx.py"
+    script.write_text("import time\nprint('transmitting', flush=True)\n"
+                      "try:\n    time.sleep(60)\nfinally:\n    print('TX OFF - cleanup ran', flush=True)\n")
+    spec = session.prepare_launch(config.Settings(), script)
+    env = dict(spec.env, RFSTUDIO_STOP_PIPE="1")
+    proc = subprocess.Popen(spec.argv, cwd=spec.cwd, env=env, stdin=subprocess.PIPE,
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    assert proc.stdout.readline().strip() == b"transmitting"
+    start = time.time()
+    if how == "token":
+        proc.stdin.write(runner.STOP_TOKEN + b"\n")
+        proc.stdin.flush()
+    proc.stdin.close()
+    out, err = proc.communicate(timeout=20)
+    assert b"TX OFF - cleanup ran" in out, err
+    assert proc.returncode == 130
+    assert time.time() - start < 10  # did not wait for the 60 s sleep
+
+
+def test_frozen_runner_finds_bundled_hackrf_dir(tmp_path, monkeypatch):
+    bundle = tmp_path / "_internal"
+    (bundle / "hackrf").mkdir(parents=True)
+    monkeypatch.setattr(sys, "_MEIPASS", str(bundle), raising=False)
+    monkeypatch.delenv("RFSTUDIO_HACKRF_DIR", raising=False)
+    assert runner._search_dirs(None) == [str(bundle / "hackrf")]
+    monkeypatch.setattr(sys, "platform", "win32")
+    cands = runner._library_candidates(None)
+    assert cands[0] == str(bundle / "hackrf" / "hackrf-0.dll")

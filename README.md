@@ -8,7 +8,15 @@ Drop a Python script into `scripts/`. The app reads its variables and builds a s
 
 ## Features
 
-- **Options built from your script.** Top-level variables such as `ENABLE_TX = False` or `CENTER_FREQ = 433.92e6` become controls, grouped by the comment headers in your file. Values are saved per script.
+- **Options built from your script.** Top-level variables such as `ENABLE_TX = False` or `CENTER_FREQ = 433.92e6` become controls, grouped by the comment headers in your file. Scripts without headers are grouped by meaning:
+  - Groups: Radio, Transmit, Receive, Detection, Timing, Files & storage, Logging & display, Network, Advanced.
+  - On/off switches sit together in a grid at the top of each group, and settings that make the HackRF transmit are marked **TX** in red.
+  - Frequencies display as `433.92 MHz`, and gains get the HackRF's real limits.
+  - Values are saved per script.
+- **Command-line flags become buttons.** Flags your script defines with `argparse` or checks in `sys.argv` appear on the **Commands** page:
+  - Report flags (`--history`, `--top N`, `--pairs`, ...) run once, and their output is shown as sortable tables you can copy or save as CSV.
+  - Long-running flags (`--scan`) become the **Start mode**, supervised and restarted like any run.
+- **Touch screens:** drag anywhere on a page to scroll it, with a finger or the mouse (Settings → Appearance).
 - **Both HackRF interfaces:**
   - **pyhackrf2** is bundled. On Windows a small shim loads `hackrf.dll`, because pyhackrf2 only looks for `libhackrf.so.0`.
   - **hackrf_transfer** has its own page for recording and transmitting IQ files, and the HackRF tools are on `PATH` for your script.
@@ -26,6 +34,10 @@ Drop a Python script into `scripts/`. The app reads its variables and builds a s
   - **Windows:** the HackRF DLL and tools are bundled, along with Zadig for the WinUSB driver.
 - **Live console** with colouring, search, timestamps and export. Output also goes to rotating log files.
 - **Dark and light themes.** Your script's changes are picked up when the file changes on disk.
+
+| Commands & reports | Options grouped automatically |
+|---|---|
+| ![Commands](docs/screenshots/commands.png) | ![Scanner options](docs/screenshots/control-scanner.png) |
 
 | Device & drivers | hackrf_transfer |
 |---|---|
@@ -62,6 +74,23 @@ VERBOSE = True
 | `# @gui-begin` … `# @gui-end` | only read variables between these lines |
 
 Number fields accept `433.92M`, `2.4G`, `8e6` and `2_000_000`. Your script itself is never modified. A patched copy with your values is run each time, and line numbers in tracebacks still match your file.
+
+### Command-line flags
+
+If your script has flags, they're picked up automatically, whether they're defined with argparse or checked by hand:
+
+```python
+parser.add_argument("--scan", action="store_true", help="Run the scanner continuously")  # -> run mode
+parser.add_argument("--top", type=int, nargs="?", const=10, metavar="N")                 # -> report with a box for N
+if "--history" in sys.argv: ...                                                          # -> report
+```
+
+Flags whose name or help text sounds long-running (scan, monitor, listen, transmit, continuous, ...) become **run modes**, and the rest become **reports**. Report output is shown as tables when it looks like one:
+- columns aligned with spaces, `|` tables or CSV, with the header row detected;
+- `Name: value` summaries;
+- titles like `=== Top 10 ===`.
+
+`examples/frequency_scanner.py` is a complete example.
 
 To see what the app will detect:
 
@@ -113,7 +142,9 @@ When a script stops with an error, a banner explains it in plain English with a 
 
 Errors a restart can't fix, such as a syntax error or a missing package, stop the script instead of restarting it over and over.
 
-**Working folder:** a script you open from your own folders runs in its own folder. Scripts bundled with the app run in `~/RF Script Studio/<script name>/` (`%USERPROFILE%\RF Script Studio\...` on Windows), because the install folder is read-only. Files the script saves with relative paths go there. The folder button next to the script name opens it.
+**Working folder:** a script you open from your own folders runs in its own folder. Scripts bundled with the app run from a copy in `~/RF Script Studio/<script name>/` (`%USERPROFILE%\RF Script Studio\...` on Windows), because the install folder is read-only. Files saved with relative paths or next to the script (`Path(__file__).parent / "backups"`) end up there, and they're kept across updates. The folder button next to the script name opens it.
+
+**Stopping cleanly:** Stop sends Ctrl+C on Linux and an equivalent stop request on Windows. Your script gets a `KeyboardInterrupt`, so its `finally:` / `except KeyboardInterrupt:` code runs (for example, switching the transmitter off) before it's force-closed.
 
 **pyhackrf2 fixes:** the app patches two bugs in pyhackrf2 1.0.x when your script imports it, without changing the installed package:
 - `read_samples()` returned samples with a constant offset and busy-waited at 100% CPU. It now returns IQ scaled to ±1, like `hackrf_transfer` data.

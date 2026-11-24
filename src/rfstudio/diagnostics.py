@@ -91,8 +91,9 @@ def diagnose(lines: list[str], exit_code: int | None = None) -> Diagnosis | None
     if "permissionerror" in low or "read-only file system" in low:
         return Diagnosis(
             "The script isn't allowed to write a file",
-            "It tried to save somewhere it has no permission. Relative paths are saved in the working folder; "
-            "use one of those or a folder in your home directory.", ACTION_FOLDER, "Open working folder", err)
+            "It tried to save somewhere it has no permission. Save files with relative paths or next to the "
+            "script (Path(__file__).parent) - both end up in the working folder - or in your home directory.",
+            ACTION_FOLDER, "Open working folder", err)
 
     if "filenotfounderror" in low:
         return Diagnosis("The script couldn't find a file it needs",

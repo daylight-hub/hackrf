@@ -69,6 +69,9 @@ class ScriptVariable:
     maximum: float | None = None
     step: float | None = None
     hidden: bool = False
+    danger: bool = False             # switches transmitting on (shown in red)
+    category: str = ""               # inferred group (Radio, Transmit, Timing, ...)
+    explicit_section: bool = False   # section came from a header / @section in the script
     # (start_line, start_col_bytes, end_line, end_col_bytes) of the value expr
     span: tuple[int, int, int, int] = (0, 0, 0, 0)
 
@@ -87,6 +90,7 @@ class ScriptSpec:
     variables: list[ScriptVariable] = field(default_factory=list)
     docstring: str = ""
     errors: list[str] = field(default_factory=list)
+    commands: Any = None  # script_commands.CommandSet (command-line flags)
 
     @property
     def sections(self) -> list[str]:
@@ -314,6 +318,9 @@ def parse_script(path: str | Path, source: str | None = None) -> ScriptSpec:
         return spec
 
     spec.docstring = ast.get_docstring(tree) or ""
+    from .script_commands import parse_commands
+
+    spec.commands = parse_commands(tree)
     full_comments, inline_comments = _comment_map(source)
 
     # Region markers
@@ -331,14 +338,14 @@ def parse_script(path: str | Path, source: str | None = None) -> ScriptSpec:
     seen: set[str] = set()
     header_lines = sorted(headers)
 
-    def section_for(line: int) -> str:
-        current = DEFAULT_SECTION
+    def section_for(line: int) -> tuple[str, bool]:
+        current, explicit = DEFAULT_SECTION, False
         for hl in header_lines:
             if hl < line:
-                current = headers[hl]
+                current, explicit = headers[hl], True
             else:
                 break
-        return current
+        return current, explicit
 
     for stmt in tree.body:
         if isinstance(stmt, ast.Assign):
@@ -394,7 +401,8 @@ def parse_script(path: str | Path, source: str | None = None) -> ScriptSpec:
             name=target,
             kind=_kind_for(value),
             default=value,
-            section=section_for(stmt.lineno),
+            section=section_for(stmt.lineno)[0],
+            explicit_section=section_for(stmt.lineno)[1],
             description=" ".join(desc_parts).strip(),
             lineno=stmt.lineno,
             source_text=ast.get_source_segment(source, value_node) or repr(value),
@@ -404,9 +412,13 @@ def parse_script(path: str | Path, source: str | None = None) -> ScriptSpec:
         )
         if "section" in directives and directives["section"]:
             var.section = directives["section"]
+            var.explicit_section = True
         _apply_directives(var, directives)
         spec.variables.append(var)
 
+    from .script_layout import organize
+
+    organize(spec)
     return spec
 
 
@@ -460,11 +472,11 @@ def coerce_value(var: ScriptVariable, value: Any) -> Any:
             raise ValueError("expected a number")
         if kind == KIND_INT:
             if isinstance(num, float):
-                if not num.is_integer():
+                if abs(num - round(num)) > 1e-6 * max(1.0, abs(num)):
                     raise ValueError("expected a whole number")
-                num = int(num)
+                num = int(round(num))
         else:
-            num = float(num)
+            num = float(f"{float(num):.12g}")  # 433.92 * 1e6 -> 433920000.0, not ...99994
         if var.minimum is not None and num < var.minimum:
             raise ValueError(f"must be ≥ {format_number(var.minimum)}")
         if var.maximum is not None and num > var.maximum:
@@ -498,8 +510,18 @@ def format_number(value: float | int) -> str:
     return repr(value)
 
 
+def format_hz(value: float | int) -> str:
+    v = float(value)
+    for div, prefix in ((1e9, "G"), (1e6, "M"), (1e3, "k")):
+        if abs(v) >= div:
+            return f"{v / div:.9g} {prefix}Hz"
+    return f"{v:.9g} Hz"
+
+
 def value_to_text(var: ScriptVariable, value: Any) -> str:
     if var.kind in (KIND_INT, KIND_FLOAT):
+        if var.unit == "Hz" and not isinstance(value, bool):
+            return format_hz(value)
         return format_number(value)
     if var.kind == KIND_STR:
         return str(value)

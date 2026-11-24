@@ -8,11 +8,14 @@ from PySide6.QtCore import Property, QEasingCurve, QPropertyAnimation, QRectF, Q
 from PySide6.QtGui import QColor, QPainter
 from PySide6.QtWidgets import (
     QAbstractButton,
+    QAbstractScrollArea,
     QFrame,
     QHBoxLayout,
     QLabel,
     QLineEdit,
     QPushButton,
+    QScroller,
+    QScrollerProperties,
     QSizePolicy,
     QVBoxLayout,
     QWidget,
@@ -25,8 +28,9 @@ from . import icons, theme
 class ToggleSwitch(QAbstractButton):
     """Animated on/off switch."""
 
-    def __init__(self, checked: bool = False, parent: QWidget | None = None) -> None:
+    def __init__(self, checked: bool = False, parent: QWidget | None = None, danger: bool = False) -> None:
         super().__init__(parent)
+        self.danger = danger
         self.setCheckable(True)
         self.setChecked(checked)
         self.setCursor(Qt.PointingHandCursor)
@@ -66,7 +70,8 @@ class ToggleSwitch(QAbstractButton):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
         rect = QRectF(1, 2, self.width() - 2, self.height() - 4)
-        off, on = QColor(p.border), QColor(p.accent if self.isEnabled() else p.muted)
+        on_color = p.danger if self.danger else p.accent
+        off, on = QColor(p.border), QColor(on_color if self.isEnabled() else p.muted)
         t = self._offset
         track = QColor(
             int(off.red() + (on.red() - off.red()) * t),
@@ -104,9 +109,29 @@ class Card(QFrame):
         self.header.addStretch(1)
         if title:
             self.outer.addLayout(self.header)
-        self.body = QVBoxLayout()
+        self.body_widget = QWidget()
+        self.body = QVBoxLayout(self.body_widget)
+        self.body.setContentsMargins(0, 0, 0, 0)
         self.body.setSpacing(10)
-        self.outer.addLayout(self.body)
+        self.outer.addWidget(self.body_widget)
+        self.chevron: QLabel | None = None
+        self.collapsed = False
+
+    def make_collapsible(self, collapsed: bool = False) -> None:
+        self.chevron = QLabel()
+        self.chevron.setObjectName("cardTitle")
+        self.header.insertWidget(0, self.chevron)
+        for w in (self.title_label, self.badge_label, self.chevron):
+            w.setCursor(Qt.PointingHandCursor)
+            w.mousePressEvent = lambda _e: self.set_collapsed(not self.collapsed)  # type: ignore[method-assign]
+        self.title_label.setToolTip("Click to collapse / expand")
+        self.set_collapsed(collapsed)
+
+    def set_collapsed(self, collapsed: bool) -> None:
+        self.collapsed = collapsed
+        self.body_widget.setVisible(not collapsed)
+        if self.chevron is not None:
+            self.chevron.setText("▸" if collapsed else "▾")
 
     def set_badge(self, text: str) -> None:
         self.badge_label.setText(text)
@@ -163,7 +188,9 @@ class NumberEdit(QLineEdit):
         self._value = value
         self.setText(script_model.value_to_text(var, value))
         hint = "e.g. 433.92M, 8e6" if var.kind == script_model.KIND_FLOAT else "whole number"
-        if var.minimum is not None or var.maximum is not None:
+        if var.unit == "Hz":
+            hint = "e.g. 433.92 MHz, 2.4 GHz"
+        if (var.minimum is not None or var.maximum is not None) and var.unit != "Hz":
             lo = "" if var.minimum is None else script_model.format_number(var.minimum)
             hi = "" if var.maximum is None else script_model.format_number(var.maximum)
             hint = f"{lo} … {hi}"
@@ -210,6 +237,36 @@ class NumberEdit(QLineEdit):
             event.accept()
             return
         super().wheelEvent(event)
+
+
+_touch_mouse_drag = True
+
+
+def set_touch_mode(on: bool) -> None:
+    """When on, dragging with the mouse/finger anywhere in a page scrolls it."""
+    global _touch_mouse_drag
+    _touch_mouse_drag = on
+
+
+def touch_mode() -> bool:
+    return _touch_mouse_drag
+
+
+def touch_scroll(area: QAbstractScrollArea, mouse_drag: bool = True) -> None:
+    """Kinetic scrolling: touch-and-drag anywhere (and mouse drag in touch mode)."""
+    vp = area.viewport()
+    QScroller.grabGesture(vp, QScroller.TouchGesture)
+    if mouse_drag and _touch_mouse_drag:
+        QScroller.grabGesture(vp, QScroller.LeftMouseButtonGesture)
+    scroller = QScroller.scroller(vp)
+    props = scroller.scrollerProperties()
+    try:
+        props.setScrollMetric(QScrollerProperties.VerticalOvershootPolicy, QScrollerProperties.OvershootAlwaysOff)
+        props.setScrollMetric(QScrollerProperties.HorizontalOvershootPolicy, QScrollerProperties.OvershootAlwaysOff)
+        props.setScrollMetric(QScrollerProperties.DragStartDistance, 0.003)
+    except (TypeError, AttributeError):
+        pass
+    scroller.setScrollerProperties(props)
 
 
 def button(text: str, icon_name: str | None = None, variant: str | None = None,

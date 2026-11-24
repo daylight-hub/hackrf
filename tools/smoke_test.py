@@ -85,6 +85,22 @@ def main() -> int:
             if res.returncode != 0 or "(hardware)" not in res.stdout or "power" not in res.stdout:
                 failures.append("example failed against the simulated HackRF")
 
+    # The desktop executable must start (Qt plugins, icons, theme...) and keep running.
+    gui = app / ("rfscriptstudio.exe" if os.name == "nt" else "rfscriptstudio")
+    with tempfile.TemporaryDirectory() as tmp:
+        env = dict(os.environ, QT_QPA_PLATFORM="offscreen", RFSTUDIO_ALLOW_MULTIPLE="1",
+                   APPDATA=tmp, LOCALAPPDATA=tmp, XDG_CONFIG_HOME=tmp, XDG_STATE_HOME=tmp)
+        print("$", gui, "(offscreen, 10 s)", flush=True)
+        proc = subprocess.Popen([str(gui)], env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        try:
+            out, _ = proc.communicate(timeout=10)
+            failures.append(f"desktop app exited early with code {proc.returncode}: "
+                            f"{out.decode(errors='replace')[-1500:]}")
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.communicate()
+            print("desktop app is running - OK")
+
     if failures:
         print("\nSMOKE TEST FAILED:")
         for f in failures:

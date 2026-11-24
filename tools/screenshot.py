@@ -38,10 +38,31 @@ def main() -> int:
     theme.apply(app, theme_name)
     script = ROOT / "examples" / "spectrum_monitor.py"
     settings.overrides_for(script).update({"ENABLE_AMP": "True", "AVERAGE_BLOCKS": "2"})
+    from rfstudio.gui.options_panel import OptionRow
+    OptionRow._tx_confirmed = True
     win = MainWindow(settings, str(script))
     win.resize(1500, 950)
     win.show()
     suffix = "" if theme_name == "dark" else "-light"
+
+    def load_scanner() -> None:
+        # a copy in a temp folder, with some scan history, so nothing is written into the repo
+        import json
+        import random
+        import shutil
+        import time as _t
+        folder = Path(_tmp) / "scanner"
+        folder.mkdir(exist_ok=True)
+        dst = folder / "frequency_scanner.py"
+        shutil.copy2(ROOT / "examples" / "frequency_scanner.py", dst)
+        rnd = random.Random(7)
+        known = [315.0e6, 433.92e6, 868.35e6, 915.0e6, 462.5625e6]
+        scans = [{"t": _t.time() - 60 * (40 - i), "hits": [(f, round(rnd.uniform(-70, -30), 1)) for f in known
+                                                           if rnd.random() < 0.6]} for i in range(40)]
+        (folder / "scan_data.json").write_text(json.dumps({"scans": scans, "blocked": [462.5625e6]}))
+        win.supervisor.stop()
+        win.load_script(dst)
+        win.show_page("control")
 
     def shoot(name: str) -> None:
         app.processEvents()
@@ -53,12 +74,17 @@ def main() -> int:
         steps.append((300, win.start_script))
     steps += [
         (4500 if run else 600, lambda: shoot("control")),
-        (100, lambda: win.stack.setCurrentIndex(1)),
+        (100, lambda: win.show_page("device")),
         (400, lambda: shoot("device")),
-        (100, lambda: win.stack.setCurrentIndex(2)),
+        (100, lambda: win.show_page("transfer")),
         (400, lambda: shoot("transfer")),
-        (100, lambda: win.stack.setCurrentIndex(3)),
+        (100, lambda: win.show_page("settings")),
         (400, lambda: shoot("settings")),
+        (100, load_scanner),
+        (900, lambda: shoot("control-scanner")),
+        (100, lambda: (win.show_page("commands"), win.commands_page.run(["--history"], "History"))),
+        (2500, lambda: win.commands_page.run(["--top", "5"], "Top")),
+        (2500, lambda: shoot("commands")),
         (100, win.quit_app),
     ]
     def run_step(i: int = 0) -> None:

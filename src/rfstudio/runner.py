@@ -30,10 +30,23 @@ _installed = False
 loaded_library: str | None = None
 
 
+def _search_dirs(hackrf_dir: str | None) -> list[str]:
+    """Explicit dir, $RFSTUDIO_HACKRF_DIR, then the folder bundled with a frozen build."""
+    dirs = [hackrf_dir, os.environ.get("RFSTUDIO_HACKRF_DIR")]
+    meipass = getattr(sys, "_MEIPASS", None)
+    if meipass:
+        dirs.append(os.path.join(meipass, "hackrf"))
+    out: list[str] = []
+    for d in dirs:
+        if d and os.path.isdir(d) and d not in out:
+            out.append(d)
+    return out
+
+
 def _library_candidates(hackrf_dir: str | None) -> list[str]:
     import ctypes.util
 
-    dirs = [d for d in (hackrf_dir, os.environ.get("RFSTUDIO_HACKRF_DIR")) if d]
+    dirs = _search_dirs(hackrf_dir)
     cands: list[str] = []
     if sys.platform.startswith("win"):
         for d in dirs:
@@ -65,8 +78,8 @@ def install_hackrf_compat(hackrf_dir: str | None = None) -> None:
     import ctypes
 
     if sys.platform.startswith("win"):
-        for d in (hackrf_dir, os.environ.get("RFSTUDIO_HACKRF_DIR")):
-            if d and os.path.isdir(d) and hasattr(os, "add_dll_directory"):
+        for d in _search_dirs(hackrf_dir):
+            if hasattr(os, "add_dll_directory"):
                 try:
                     os.add_dll_directory(d)
                 except OSError:
@@ -204,6 +217,42 @@ def run_script(script: str, origin: str, argv: list[str], hackrf_dir: str | None
     exec(code, module.__dict__)
 
 
+STOP_TOKEN = b"__rfstudio_stop__"
+
+
+def _start_stop_listener() -> None:
+    """Windows has no SIGINT for windowless processes: the supervisor writes a stop
+    token to our stdin instead (EOF = the app went away). Either one raises
+    KeyboardInterrupt in the script, exactly like pressing Ctrl+C, so its
+    cleanup (closing the radio, switching TX off) runs."""
+    import io
+    import signal
+    import threading
+
+    stream = sys.stdin.buffer if sys.stdin is not None else None
+    sys.stdin = io.StringIO("")  # the script itself gets an empty stdin
+    if stream is None:
+        return
+
+    def watch() -> None:
+        try:
+            for line in iter(stream.readline, b""):
+                if line.strip() == STOP_TOKEN:
+                    break
+        except (OSError, ValueError):
+            pass
+        try:
+            if hasattr(signal, "pthread_kill"):  # POSIX: deliver to the main thread (interrupts sleep)
+                signal.pthread_kill(threading.main_thread().ident, signal.SIGINT)
+            else:  # Windows: runs CPython's handler, which also wakes time.sleep()
+                signal.raise_signal(signal.SIGINT)
+        except (AttributeError, OSError, ValueError):
+            import _thread
+            _thread.interrupt_main()
+
+    threading.Thread(target=watch, name="rfstudio-stop", daemon=True).start()
+
+
 def _line_buffer_stdio() -> None:
     for stream in (sys.stdout, sys.stderr):
         try:
@@ -221,6 +270,8 @@ def main(args: list[str] | None = None) -> None:
     ns = parser.parse_args(args)
     extra = ns.script_args[1:] if ns.script_args[:1] == ["--"] else ns.script_args
     _line_buffer_stdio()
+    if os.environ.get("RFSTUDIO_STOP_PIPE") == "1":
+        _start_stop_listener()
     origin = ns.origin or ns.script
     try:
         run_script(ns.script, origin, extra, ns.hackrf_dir)
@@ -242,15 +293,17 @@ def main(args: list[str] | None = None) -> None:
 
 def _print_user_traceback(exc: BaseException, origin: str) -> None:
     """Print the traceback starting at the user's script (hide runner frames)."""
-    tb = exc.__traceback__
-    here = os.path.abspath(__file__)
-    internal = {"cli.py", "launcher.py", "__main__.py"}
-    while tb is not None:
-        fname = tb.tb_frame.f_code.co_filename
-        if os.path.abspath(fname) != here and os.path.basename(fname) not in internal:
-            break
+    full = exc.__traceback__
+    target = os.path.normcase(os.path.abspath(origin))
+    tb = full
+    while tb is not None and os.path.normcase(os.path.abspath(tb.tb_frame.f_code.co_filename)) != target:
         tb = tb.tb_next
-    traceback.print_exception(type(exc), exc, tb if tb is not None else exc.__traceback__)
+    if tb is None:  # error before the script started (e.g. syntax error): drop runner frames only
+        tb = full
+        while tb is not None and os.path.basename(tb.tb_frame.f_code.co_filename) in (
+                "runner.py", "cli.py", "launcher.py", "__main__.py"):
+            tb = tb.tb_next
+    traceback.print_exception(type(exc), exc, tb if tb is not None else full)
     sys.stderr.flush()
 
 

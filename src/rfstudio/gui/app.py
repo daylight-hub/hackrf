@@ -59,6 +59,9 @@ def run_gui(args: Namespace) -> int:
     from . import theme
     settings = config.load()
     theme.apply(app, settings.ui.theme, settings.ui.text_size)
+    from .widgets import set_touch_mode
+
+    set_touch_mode(settings.ui.touch_mode)
 
     from .main_window import MainWindow, app_icon
     app.setWindowIcon(app_icon())

@@ -200,10 +200,13 @@ class Supervisor:
             pass
 
     def _spawn(self, spec: LaunchSpec) -> subprocess.Popen[bytes]:
+        env = dict(spec.env) if spec.env is not None else None
+        if IS_WINDOWS and env is not None:
+            env["RFSTUDIO_STOP_PIPE"] = "1"
         kwargs: dict = dict(
             cwd=spec.cwd or None,
-            env=spec.env,
-            stdin=subprocess.DEVNULL,
+            env=env,
+            stdin=subprocess.PIPE if IS_WINDOWS else subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
         )
@@ -242,10 +245,20 @@ class Supervisor:
             return
         timeout = max(1.0, float(self.policy.stop_timeout_s))
         if IS_WINDOWS:
+            # 1) polite: stop token on stdin -> KeyboardInterrupt in the script (cleanup runs)
             try:
-                proc.terminate()
-            except OSError:
+                if proc.stdin is not None:
+                    proc.stdin.write(b"__rfstudio_stop__\n")
+                    proc.stdin.flush()
+                    proc.stdin.close()
+            except (OSError, ValueError):
                 pass
+            try:
+                proc.wait(timeout * 0.75)
+                return
+            except subprocess.TimeoutExpired:
+                pass
+            # 2) force: kill the whole tree while the parent still exists (so /T finds children)
             try:
                 subprocess.run(["taskkill", "/PID", str(proc.pid), "/T", "/F"],
                                capture_output=True, timeout=10,
@@ -253,7 +266,7 @@ class Supervisor:
             except (OSError, subprocess.SubprocessError):
                 pass
             try:
-                proc.wait(timeout)
+                proc.wait(5)
             except subprocess.TimeoutExpired:
                 proc.kill()
             return

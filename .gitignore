@@ -12,3 +12,6 @@ screenshots/
 *.spec.bak
 .DS_Store
 Thumbs.db
+examples/*.json
+examples/captures/
+examples/power_log.csv

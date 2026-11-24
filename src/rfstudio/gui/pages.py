@@ -37,7 +37,7 @@ from PySide6.QtWidgets import (
 from .. import APP_NAME, __version__, autostart, config, drivers, hackrf_backend, paths, script_model, session
 from . import theme
 from .console import ConsoleView
-from .widgets import Card, StatusPill, ToggleSwitch, button, form_row, muted, page_header
+from .widgets import Card, StatusPill, ToggleSwitch, button, form_row, muted, page_header, touch_scroll
 
 
 class _Relay(QObject):
@@ -71,6 +71,7 @@ def scroll_page(*widgets: QWidget) -> QScrollArea:
     lay.addStretch(1)
     area.setWidget(inner)
     area.inner_layout = lay  # type: ignore[attr-defined]
+    touch_scroll(area)
     return area
 
 
@@ -125,6 +126,7 @@ class DevicePage(QWidget):
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
         self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.Stretch)
         self.table.setMinimumHeight(theme.px(160))
+        touch_scroll(self.table)
         self.dev_card.body.addWidget(self.table)
         self.status = muted("Detection briefly opens the radio. If a script is using it, the device may be reported "
                             "as busy - stop the script first.")
@@ -527,6 +529,13 @@ class TransferPage(QWidget):
         for k, v in paths.clean_child_env(session.hackrf_search_dirs(self.settings)).items():
             env.insert(k, v)
         self.proc.setProcessEnvironment(env)
+        if paths.IS_WINDOWS and hasattr(self.proc, "setCreateProcessArgumentsModifier"):
+            def _no_window(args):  # type: ignore[no-untyped-def]
+                args.flags |= 0x08000000  # CREATE_NO_WINDOW
+            try:
+                self.proc.setCreateProcessArgumentsModifier(_no_window)
+            except (TypeError, AttributeError):
+                pass
         self.proc.setProgram(cmd[0])
         self.proc.setArguments(cmd[1:])
         if p.file:
@@ -695,6 +704,10 @@ class SettingsPage(QWidget):
         self.text_size.setFixedWidth(theme.px(160))
         look.body.addWidget(form_row("Text size", self.text_size,
                                      "Text changes immediately; spacing updates after restarting the app"))
+        self.touch = self._toggle(ui.touch_mode)
+        look.body.addWidget(form_row("Touch screen scrolling", self.touch,
+                                     "Drag anywhere on a page to scroll it (finger or mouse). Applies after "
+                                     "restarting the app."))
         self.max_lines = self._spin(500, 200000, ui.console_max_lines, suffix=" lines")
         look.body.addWidget(form_row("Console history", self.max_lines))
 
@@ -717,7 +730,7 @@ class SettingsPage(QWidget):
             w.valueChanged.connect(self._commit)
         for w in (self.max_restarts, self.window, self.stall, self.max_lines):
             w.valueChanged.connect(self._commit)
-        for w in (self.close_to_tray, self.start_min, self.autorun, self.notify, self.apply_now):
+        for w in (self.close_to_tray, self.start_min, self.autorun, self.notify, self.apply_now, self.touch):
             w.toggled.connect(self._commit)
         for w in (self.policy, self.py_mode):
             w.currentIndexChanged.connect(self._commit)
@@ -788,6 +801,7 @@ class SettingsPage(QWidget):
         ui.restart_on_change = self.apply_now.isChecked()
         ui.theme = self.theme_box.currentData()
         ui.text_size = self.text_size.currentData()
+        ui.touch_mode = self.touch.isChecked()
         ui.console_max_lines = self.max_lines.value()
         self.s.hackrf.tools_dir = self.tools_dir.text().strip()
         self.s.python.mode = self.py_mode.currentData()

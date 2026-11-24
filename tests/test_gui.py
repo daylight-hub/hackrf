@@ -21,7 +21,9 @@ def window(qapp, tmp_path, monkeypatch):
     from rfstudio import config
     from rfstudio.gui import theme
     from rfstudio.gui.main_window import MainWindow
+    from rfstudio.gui.options_panel import OptionRow
 
+    OptionRow._tx_confirmed = True  # no modal "enable transmitting?" prompt in tests
     theme.apply(qapp, "dark")
     script = tmp_path / "demo.py"
     script.write_text(
@@ -58,3 +60,26 @@ def test_filter_toggles(window):
     win.options.filter_buttons["bool"].setChecked(True)
     visible = [r.var.name for r in win.options.rows if not r.isHidden()]
     assert visible == ["ENABLE_TX", "VERBOSE"]
+
+
+def test_touch_scrolling_enabled(window):
+    from PySide6.QtWidgets import QScroller
+
+    win, _ = window
+    assert QScroller.hasScroller(win.options.scroll.viewport())
+
+
+def test_commands_page_lists_flags(qapp, tmp_path, monkeypatch):
+    for var in ("XDG_CONFIG_HOME", "XDG_STATE_HOME"):
+        monkeypatch.setenv(var, str(tmp_path))
+    from pathlib import Path
+
+    from rfstudio import config
+    from rfstudio.gui.main_window import MainWindow
+
+    script = Path(__file__).resolve().parents[1] / "examples" / "frequency_scanner.py"
+    win = MainWindow(config.Settings(), str(script))
+    assert win.mode_box.isVisibleTo(win) and win.mode_combo.currentData() == "--scan"
+    labels = [w.text() for w in win.commands_page.left_inner.findChildren(QtWidgets.QLabel)]
+    assert "History" in labels and "Block freq" in labels
+    win.close()

@@ -86,6 +86,9 @@ class ConsoleView(QWidget):
         self.view.setLineWrapMode(QPlainTextEdit.WidgetWidth)
         self.view.setPlaceholderText("Script output will appear here.")
         lay.addWidget(self.view, 1)
+        from .widgets import touch_scroll
+
+        touch_scroll(self.view, mouse_drag=False)  # keep mouse text selection in the console
 
         self._timer = QTimer(self)
         self._timer.setInterval(80)

@@ -70,6 +70,11 @@ def main(argv: list[str] | None = None) -> int:
                 if v.section == section:
                     flag = " (hidden)" if v.hidden else ""
                     print(f"  {v.name:<24} {v.kind:<8} = {v.source_text}{flag}  {v.description}")
+        if spec.commands and spec.commands.commands:
+            print("[Commands]")
+            for c in spec.commands.commands:
+                val = f" <{c.metavar or c.type_name}>" if c.takes_value else ""
+                print(f"  {c.flag + val:<26} {c.kind:<8} {c.help}")
         return 1 if spec.errors else 0
 
     if args.headless:

@@ -35,6 +35,7 @@ from .. import APP_NAME, __version__, config, diagnostics, paths, script_model, 
 from ..headless import make_script_logger
 from ..supervisor import State, Supervisor
 from . import icons, theme
+from .commands_page import CommandsPage
 from .console import ConsoleView
 from .options_panel import OptionsPanel
 from .pages import DevicePage, SettingsPage, TransferPage
@@ -164,7 +165,8 @@ class MainWindow(QMainWindow):
         self.stack = QStackedWidget()
         self.nav = QButtonGroup(self)
         self.nav_buttons: list[QPushButton] = []
-        for i, (label, ic) in enumerate((("Control", "control"), ("Device", "device"),
+        self.page_index = {"control": 0, "commands": 1, "device": 2, "transfer": 3, "settings": 4}
+        for i, (label, ic) in enumerate((("Control", "control"), ("Commands", "log"), ("Device", "device"),
                                          ("Transfer", "transfer"), ("Settings", "settings"))):
             b = QPushButton(f"  {label}")
             b.setObjectName("navButton")
@@ -195,6 +197,9 @@ class MainWindow(QMainWindow):
 
         # ---- pages
         self.stack.addWidget(self._build_control_page())
+        self.commands_page = CommandsPage(self.settings, lambda: self.script_path, lambda: self.spec)
+        self.commands_page.startModeRequested.connect(self._start_with_mode)
+        self.stack.addWidget(self.commands_page)
         self.device_page = DevicePage(self.settings, lambda: self.supervisor.is_active)
         self.transfer_page = TransferPage(self.settings, self._save_soon)
         self.settings_page = SettingsPage(self.settings, lambda: str(self.script_path) if self.script_path else None)
@@ -279,6 +284,20 @@ class MainWindow(QMainWindow):
         for s in (self.stat_pid, self.stat_uptime, self.stat_restarts, self.stat_exit, self.stat_policy):
             row3.addWidget(s)
         row3.addStretch(1)
+        self.mode_box = QWidget()
+        mb = QVBoxLayout(self.mode_box)
+        mb.setContentsMargins(0, 0, 0, 0)
+        mb.setSpacing(2)
+        self.mode_combo = QComboBox()
+        self.mode_combo.setMinimumWidth(theme.px(210))
+        self.mode_combo.setToolTip("Which command-line mode Start runs (e.g. --scan)")
+        self.mode_combo.activated.connect(self._mode_changed)
+        mcap = QLabel("START MODE")
+        mcap.setObjectName("statLabel")
+        mb.addWidget(self.mode_combo)
+        mb.addWidget(mcap)
+        row3.addWidget(self.mode_box)
+        row3.addSpacing(theme.px(12))
         args_box = QVBoxLayout()
         args_box.setSpacing(2)
         self.args_edit = QLineEdit()
@@ -425,6 +444,8 @@ class MainWindow(QMainWindow):
             self._populate_script_combo()
             return
         path = path.resolve()
+        if self.script_path and path != self.script_path:
+            self.console.append(f"──────── switched to {path.name} ────────", "info")
         if self.script_path and str(self.script_path) in self.watcher.files():
             self.watcher.removePath(str(self.script_path))
         self.script_path = path
@@ -459,6 +480,8 @@ class MainWindow(QMainWindow):
 
         self.opt_hint.setText(f"{plural(n, 'option')} · {plural(ns, 'section')} · {plural(bools, 'toggle')}")
         self.opt_hint.setToolTip("Generated from the script's variables. Values are saved per script.")
+        self._populate_modes()
+        self.commands_page.refresh()
         if self.spec.errors:
             self._show_banner("⚠ " + "; ".join(self.spec.errors), error=True)
         elif from_disk:
@@ -480,6 +503,44 @@ class MainWindow(QMainWindow):
     def _edit_script(self) -> None:
         if self.script_path:
             QDesktopServices.openUrl(QUrl.fromLocalFile(str(self.script_path)))
+
+    def show_page(self, name: str) -> None:
+        idx = self.page_index[name]
+        self.stack.setCurrentIndex(idx)
+        self.nav_buttons[idx].setChecked(True)
+
+    def _populate_modes(self) -> None:
+        self.mode_combo.clear()
+        modes = self.spec.commands.modes if self.spec and self.spec.commands else []
+        self.mode_box.setVisible(bool(modes))
+        if not modes or not self.script_path:
+            return
+        self.mode_combo.addItem("Normal (no flag)", "")
+        for m in modes:
+            self.mode_combo.addItem(f"{m.label}   {m.flag}", m.flag)
+        current = session.start_mode_for(self.settings, self.script_path, self.spec)
+        self.mode_combo.setCurrentIndex(max(0, self.mode_combo.findData(current)))
+
+    def _mode_changed(self, _idx: int) -> None:
+        if not self.script_path:
+            return
+        self.settings.start_mode[self.settings.key(self.script_path)] = self.mode_combo.currentData() or ""
+        self._save_soon()
+        self._mark_pending()
+        self.commands_page.refresh()
+
+    def _start_with_mode(self, flag: str) -> None:
+        if not self.script_path:
+            return
+        self.settings.start_mode[self.settings.key(self.script_path)] = flag
+        self._populate_modes()
+        self.commands_page.refresh()
+        self._save_soon()
+        self.show_page("control")
+        if self.supervisor.is_active:
+            self.restart_script()
+        else:
+            self.start_script()
 
     def _args_changed(self) -> None:
         if self.script_path:
@@ -543,12 +604,11 @@ class MainWindow(QMainWindow):
     def _banner_action_clicked(self) -> None:
         kind = self._banner_action_kind
         if kind in (diagnostics.ACTION_DRIVERS, diagnostics.ACTION_DEVICE):
-            self.stack.setCurrentIndex(1)
-            self.nav_buttons[1].setChecked(True)
+            self.show_page("device")
             if kind == diagnostics.ACTION_DEVICE and not self.supervisor.is_active:
                 self.device_page.detect()
         elif kind == diagnostics.ACTION_SETTINGS:
-            self.stack.setCurrentIndex(3)
+            self.show_page("settings")
         elif kind == diagnostics.ACTION_EDIT:
             self._edit_script()
         elif kind == diagnostics.ACTION_FOLDER:
@@ -735,6 +795,7 @@ class MainWindow(QMainWindow):
         QApplication.setOverrideCursor(Qt.WaitCursor)
         try:
             self.transfer_page.stop()
+            self.commands_page.stop_all()
             self.supervisor.stop(wait=True)
         finally:
             QApplication.restoreOverrideCursor()

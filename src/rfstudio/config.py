@@ -37,6 +37,7 @@ class UiSettings:
     notify: bool = True
     autorun_script: bool = False     # start the script when the app launches
     restart_on_change: bool = False  # apply option changes immediately
+    touch_mode: bool = True          # drag anywhere to scroll (touch screens)
     launch_at_login: bool = False
     console_max_lines: int = 5000
 
@@ -59,6 +60,7 @@ class Settings:
     recent_scripts: list[str] = field(default_factory=list)
     overrides: dict[str, dict[str, str]] = field(default_factory=dict)
     script_args: dict[str, str] = field(default_factory=dict)
+    start_mode: dict[str, str] = field(default_factory=dict)  # script -> flag ("" = run without a flag)
     supervisor: SupervisorSettings = field(default_factory=SupervisorSettings)
     ui: UiSettings = field(default_factory=UiSettings)
     hackrf: HackRFSettings = field(default_factory=HackRFSettings)
