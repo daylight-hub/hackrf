@@ -1,0 +1,3 @@
+# Extra packages your scripts need (numpy and pyhackrf2 are always bundled).
+# One per line, e.g.:
+# scipy
