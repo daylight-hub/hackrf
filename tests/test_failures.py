@@ -221,7 +221,13 @@ def test_stop_pipe_runs_script_cleanup(tmp_path, how):
         proc.stdin.write(runner.STOP_TOKEN + b"\n")
         proc.stdin.flush()
     proc.stdin.close()
-    out, err = proc.communicate(timeout=20)
+    # (not communicate(): on Python <= 3.12 it flushes the already-closed stdin)
+    try:
+        proc.wait(timeout=20)
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+    out, err = proc.stdout.read(), proc.stderr.read()
     assert b"TX OFF - cleanup ran" in out, err
     assert proc.returncode == 130
     assert time.time() - start < 10  # did not wait for the 60 s sleep
