@@ -99,6 +99,28 @@ Run **`RFScriptStudio-1.0.0-windows-x64-setup.exe`**. A portable `.zip` is also 
 - **USB driver:** HackRF One with stock firmware is normally picked up by Windows' built-in WinUSB driver automatically. If Device Manager shows the board with an error (common with older or PortaPack/Mayhem firmware), use the bundled **Zadig**. You can tick *Install the HackRF USB driver* in the installer, or press **Device → Install / repair USB driver** in the app. Zadig opens with WinUSB preselected: pick the HackRF and click *Install/Replace Driver*. Windows requires this one confirmation click, so it can't be done fully silently.
 - The app isn't code-signed, so SmartScreen may ask you to confirm the first run (*More info → Run anyway*).
 
+## Troubleshooting
+
+When a script stops with an error, a banner explains it in plain English with a button for the fix. The full output is in the console and in the log file.
+
+| Message | What to do |
+|---|---|
+| **No permission to open the HackRF** | Linux: Device → *Install HackRF drivers*, then unplug and re-plug the board (log out/in once if you were just added to `plugdev`). Windows: Device → *Install / repair USB driver* (Zadig → WinUSB). |
+| **The HackRF is in use by another program** | Close other SDR software (GQRX, SDR++, `hackrf_transfer`, the background service) and press Start. |
+| **No HackRF found** | Plug it in directly (not through a hub) and press Device → *Detect devices*. |
+| **The script needs the Python package "x"** | Add `x` to `scripts/requirements.txt` and push, so the next build includes it. |
+| **The script isn't allowed to write a file** | Relative paths go to the working folder (below). |
+
+Errors a restart can't fix, such as a syntax error or a missing package, stop the script instead of restarting it over and over.
+
+**Working folder:** a script you open from your own folders runs in its own folder. Scripts bundled with the app run in `~/RF Script Studio/<script name>/` (`%USERPROFILE%\RF Script Studio\...` on Windows), because the install folder is read-only. Files the script saves with relative paths go there. The folder button next to the script name opens it.
+
+**pyhackrf2 fixes:** the app patches two bugs in pyhackrf2 1.0.x when your script imports it, without changing the installed package:
+- `read_samples()` returned samples with a constant offset and busy-waited at 100% CPU. It now returns IQ scaled to ±1, like `hackrf_transfer` data.
+- Reading `lna_gain` crashed with a RecursionError.
+
+**Text size:** Settings → Appearance → *Text size* (Small / Normal / Large / Extra large).
+
 ## Running in the background
 
 | Want | How |

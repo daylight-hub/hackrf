@@ -60,6 +60,13 @@ def run_dir() -> Path:
     return path
 
 
+def user_files_dir() -> Path:
+    """Visible folder for files scripts create (captures, logs, CSVs...)."""
+    path = Path.home() / "RF Script Studio"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
 def bundled_script_dirs() -> list[Path]:
     """`scripts/` (your scripts) first, then `examples/`."""
     root = resource_root()

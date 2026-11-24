@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 
 from PySide6.QtGui import QColor, QFont, QPalette
@@ -48,6 +49,23 @@ STATE_COLORS = {
 }
 
 _current = DARK
+_scale = 1.15
+
+TEXT_SIZES = {"small": 0.92, "normal": 1.0, "large": 1.15, "xlarge": 1.32}
+BASE_PT = 10.5
+
+
+def scale() -> float:
+    return _scale
+
+
+def px(value: float) -> int:
+    """Scale a pixel size with the chosen text size."""
+    return int(round(value * _scale))
+
+
+def pt(value: float) -> float:
+    return round(value * _scale, 1)
 
 
 def current() -> Palette:
@@ -61,7 +79,7 @@ def state_color(state: str) -> str:
 def _stylesheet(p: Palette, arrow: str) -> str:
     return f"""
 * {{ outline: none; }}
-QWidget {{ color: {p.text}; background: transparent; font-size: 10pt; }}
+QWidget {{ color: {p.text}; background: transparent; }}
 QMainWindow, #root {{ background: {p.bg}; }}
 QToolTip {{ background: {p.surface2}; color: {p.text}; border: 1px solid {p.border}; padding: 6px 8px; border-radius: 6px; }}
 
@@ -73,20 +91,22 @@ QToolTip {{ background: {p.surface2}; color: {p.text}; border: 1px solid {p.bord
 #navButton:checked {{ background: {p.surface2}; color: {p.text}; border-left: 3px solid {p.accent}; }}
 #sidebarFooter {{ color: {p.muted}; font-size: 8.5pt; }}
 
-#pageTitle {{ font-size: 16pt; font-weight: 700; }}
+#pageTitle {{ font-size: 17pt; font-weight: 700; }}
 #pageSubtitle {{ color: {p.muted}; }}
 #card {{ background: {p.surface}; border: 1px solid {p.border}; border-radius: 12px; }}
-#cardTitle {{ font-size: 8.5pt; font-weight: 700; color: {p.muted}; letter-spacing: 1px; }}
+#cardTitle {{ font-size: 9pt; font-weight: 700; color: {p.muted}; letter-spacing: 1px; }}
 #cardBadge {{ color: {p.muted}; background: {p.surface2}; border-radius: 8px; padding: 1px 8px; font-size: 8.5pt; }}
 #optionLabel {{ font-weight: 600; }}
 #optionName {{ color: {p.muted}; font-family: "JetBrains Mono", "Cascadia Mono", Consolas, "DejaVu Sans Mono", monospace; font-size: 8.5pt; }}
+#optionLabel {{ font-size: 10.5pt; }}
 #optionDesc, #muted {{ color: {p.muted}; }}
 #modifiedDot {{ color: {p.accent}; font-size: 8pt; }}
 #rowDivider {{ background: {p.border}; max-height: 1px; min-height: 1px; }}
-#scriptName {{ font-size: 14pt; font-weight: 700; }}
-#statValue {{ font-size: 12pt; font-weight: 700; }}
-#statLabel {{ color: {p.muted}; font-size: 8pt; letter-spacing: 1px; }}
+#scriptName {{ font-size: 15pt; font-weight: 700; }}
+#statValue {{ font-size: 12.5pt; font-weight: 700; }}
+#statLabel {{ color: {p.muted}; font-size: 8.5pt; letter-spacing: 1px; }}
 #banner {{ background: {p.surface2}; border: 1px solid {p.accent}; border-radius: 10px; }}
+#bannerTitle {{ font-weight: 700; font-size: 11pt; }}
 #bannerError {{ background: {p.surface2}; border: 1px solid {p.danger}; border-radius: 10px; }}
 #emptyState {{ color: {p.muted}; font-size: 11pt; }}
 
@@ -119,7 +139,7 @@ QComboBox QAbstractItemView {{ background: {p.surface}; border: 1px solid {p.bor
 QSpinBox::up-button, QSpinBox::down-button, QDoubleSpinBox::up-button, QDoubleSpinBox::down-button {{ width: 0; border: none; }}
 
 QPlainTextEdit#console {{ background: {p.console_bg}; border: 1px solid {p.border}; border-radius: 10px; padding: 8px;
-    font-family: "JetBrains Mono", "Cascadia Mono", Consolas, "DejaVu Sans Mono", monospace; font-size: 9pt; }}
+    font-family: "JetBrains Mono", "Cascadia Mono", Consolas, "DejaVu Sans Mono", monospace; font-size: 9.5pt; }}
 QPlainTextEdit#commandPreview {{ font-family: "JetBrains Mono", "Cascadia Mono", Consolas, "DejaVu Sans Mono", monospace; font-size: 9pt; }}
 
 QScrollArea {{ border: none; }}
@@ -177,9 +197,17 @@ def _arrow_file(p: Palette) -> str:
     return path.as_posix()
 
 
-def apply(app: QApplication, name: str = "dark") -> Palette:
-    global _current
+def _scale_qss(qss: str) -> str:
+    qss = re.sub(r"font-size: ([\d.]+)pt", lambda m: f"font-size: {pt(float(m.group(1)) * BASE_PT / 10):g}pt", qss)
+    return re.sub(r"(padding|min-height|min-width|width|height|margin)( ?: ?)([\d ]+px[^;]*)",
+                  lambda m: m.group(1) + m.group(2) + re.sub(r"(\d+)px", lambda n: f"{px(int(n.group(1)))}px",
+                                                           m.group(3)), qss)
+
+
+def apply(app: QApplication, name: str = "dark", text_size: str = "large") -> Palette:
+    global _current, _scale
     _current = LIGHT if name == "light" else DARK
+    _scale = TEXT_SIZES.get(text_size, 1.15)
     p = _current
     app.setStyle("Fusion")
     pal = QPalette()
@@ -194,7 +222,7 @@ def apply(app: QApplication, name: str = "dark") -> Palette:
     app.setPalette(pal)
     font = QFont()
     font.setFamilies(["Inter", "Segoe UI", "Ubuntu", "Cantarell", "Noto Sans", "DejaVu Sans"])
-    font.setPointSizeF(10)
+    font.setPointSizeF(pt(BASE_PT))
     app.setFont(font)
-    app.setStyleSheet(_stylesheet(p, _arrow_file(p)))
+    app.setStyleSheet(_scale_qss(_stylesheet(p, _arrow_file(p))))
     return p

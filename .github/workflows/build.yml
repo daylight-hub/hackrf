@@ -81,8 +81,11 @@ jobs:
           if [ -f scripts/requirements.txt ]; then pip install -r scripts/requirements.txt; fi
       - name: PyInstaller
         run: pyinstaller packaging/rfstudio.spec --noconfirm
-      - name: Smoke test
-        run: python tools/smoke_test.py dist/RFScriptStudio --expect-hackrf
+      - name: Smoke test (real libhackrf + simulated HackRF)
+        run: |
+          mkdir -p /tmp/mockhrf
+          cc -shared -fPIC -pthread -O2 -o /tmp/mockhrf/libhackrf.so.0 tests/mock/mock_libhackrf.c
+          python tools/smoke_test.py dist/RFScriptStudio --expect-hackrf --mock-lib=/tmp/mockhrf
       - name: Package (.tar.gz + .deb)
         run: bash tools/package_linux.sh "${{ steps.ver.outputs.version }}"
       - name: Test .deb install

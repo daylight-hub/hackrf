@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+from collections import deque
 from pathlib import Path
 from typing import Any
 
@@ -25,11 +26,12 @@ from PySide6.QtWidgets import (
     QStackedWidget,
     QStatusBar,
     QSystemTrayIcon,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
 
-from .. import APP_NAME, __version__, config, paths, script_model, session
+from .. import APP_NAME, __version__, config, diagnostics, paths, script_model, session
 from ..headless import make_script_logger
 from ..supervisor import State, Supervisor
 from . import icons, theme
@@ -77,11 +79,17 @@ class MainWindow(QMainWindow):
         self._logger = None
         self._last_state = State.STOPPED
         self._tray_hint_shown = False
+        self._recent_output: deque[str] = deque(maxlen=60)
+        self._last_diagnosis: str = ""
 
         self.setWindowTitle(APP_NAME)
         self.setWindowIcon(app_icon())
-        self.resize(1320, 840)
-        self.setMinimumSize(980, 640)
+        avail = QApplication.primaryScreen().availableGeometry() if QApplication.primaryScreen() else None
+        w, h = theme.px(1320), theme.px(860)
+        if avail is not None:
+            w, h = min(w, int(avail.width() * 0.92)), min(h, int(avail.height() * 0.92))
+        self.resize(w, h)
+        self.setMinimumSize(min(theme.px(940), w), min(theme.px(620), h))
 
         self.bridge = _Bridge()
         self.bridge.state.connect(self._on_state)
@@ -117,6 +125,8 @@ class MainWindow(QMainWindow):
         if start:
             self.load_script(start)
         self._update_controls()
+        # check for a HackRF in the background shortly after start-up (skipped if a script autostarts)
+        QTimer.singleShot(1500, lambda: self.device_page.detect(quiet=True))
 
     # ======================================================================= UI
     def _build_ui(self) -> None:
@@ -130,7 +140,7 @@ class MainWindow(QMainWindow):
         # ---- sidebar
         side = QFrame()
         side.setObjectName("sidebar")
-        side.setFixedWidth(220)
+        side.setFixedWidth(theme.px(230))
         sv = QVBoxLayout(side)
         sv.setContentsMargins(14, 18, 14, 14)
         sv.setSpacing(4)
@@ -160,7 +170,7 @@ class MainWindow(QMainWindow):
             b.setObjectName("navButton")
             b.setCheckable(True)
             b.setIcon(icons.icon(ic, p.text))
-            b.setIconSize(QSize(18, 18))
+            b.setIconSize(QSize(theme.px(18), theme.px(18)))
             b.setCursor(Qt.PointingHandCursor)
             b.setFocusPolicy(Qt.NoFocus)
             b.clicked.connect(lambda _=False, idx=i: self.stack.setCurrentIndex(idx))
@@ -170,6 +180,11 @@ class MainWindow(QMainWindow):
         self.nav_buttons[0].setChecked(True)
         sv.addStretch(1)
 
+        self.side_device = QLabel("HackRF: not checked")
+        self.side_device.setObjectName("sidebarFooter")
+        self.side_device.setWordWrap(True)
+        sv.addWidget(self.side_device)
+        sv.addSpacing(6)
         self.side_status = StatusPill()
         sv.addWidget(self.side_status, 0, Qt.AlignLeft)
         sv.addSpacing(8)
@@ -184,6 +199,7 @@ class MainWindow(QMainWindow):
         self.transfer_page = TransferPage(self.settings, self._save_soon)
         self.settings_page = SettingsPage(self.settings, lambda: str(self.script_path) if self.script_path else None)
         self.device_page.devicesChanged.connect(self.transfer_page.set_serials)
+        self.device_page.probeFinished.connect(self._device_probed)
         self.settings_page.changed.connect(self._settings_changed)
         self.settings_page.themeChanged.connect(self._theme_changed)
         for page in (self.device_page, self.transfer_page, self.settings_page):
@@ -225,7 +241,7 @@ class MainWindow(QMainWindow):
         row2 = QHBoxLayout()
         row2.setSpacing(8)
         self.script_combo = QComboBox()
-        self.script_combo.setMinimumWidth(300)
+        self.script_combo.setMinimumWidth(theme.px(300))
         self.script_combo.activated.connect(self._combo_selected)
         row2.addWidget(self.script_combo, 1)
         self.open_btn = button("Open…", "folder", tooltip="Open a Python script (Ctrl+O)")
@@ -234,12 +250,15 @@ class MainWindow(QMainWindow):
         self.reload_btn.clicked.connect(lambda: self.reload_script(from_disk=True))
         self.edit_btn = button("", "edit", "ghost", "Open the script in your editor")
         self.edit_btn.clicked.connect(self._edit_script)
+        self.folder_btn = button("", "folder", "ghost", "Open the working folder (where the script's files go)")
+        self.folder_btn.clicked.connect(self._open_workdir)
         row2.addWidget(self.open_btn)
         row2.addWidget(self.reload_btn)
         row2.addWidget(self.edit_btn)
+        row2.addWidget(self.folder_btn)
         row2.addSpacing(16)
         self.start_btn = button("Start", "play", "primary", "Start and supervise the script (F5)")
-        self.start_btn.setMinimumWidth(110)
+        self.start_btn.setMinimumWidth(theme.px(110))
         self.start_btn.clicked.connect(self.start_script)
         self.stop_btn = button("Stop", "stop", "danger", "Stop the script (Shift+F5)")
         self.stop_btn.clicked.connect(self.stop_script)
@@ -264,7 +283,7 @@ class MainWindow(QMainWindow):
         args_box.setSpacing(2)
         self.args_edit = QLineEdit()
         self.args_edit.setPlaceholderText("command-line arguments (optional)")
-        self.args_edit.setMinimumWidth(280)
+        self.args_edit.setMinimumWidth(theme.px(280))
         self.args_edit.editingFinished.connect(self._args_changed)
         cap = QLabel("ARGUMENTS")
         cap.setObjectName("statLabel")
@@ -279,13 +298,33 @@ class MainWindow(QMainWindow):
         self.banner = QFrame()
         self.banner.setObjectName("banner")
         bl = QHBoxLayout(self.banner)
-        bl.setContentsMargins(14, 8, 10, 8)
+        bl.setContentsMargins(16, 10, 10, 10)
+        bl.setSpacing(12)
+        texts = QVBoxLayout()
+        texts.setSpacing(3)
+        self.banner_title = QLabel()
+        self.banner_title.setObjectName("bannerTitle")
+        self.banner_title.setWordWrap(True)
         self.banner_text = QLabel()
         self.banner_text.setWordWrap(True)
+        self.banner_text.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        texts.addWidget(self.banner_title)
+        texts.addWidget(self.banner_text)
+        bl.addLayout(texts, 1)
         self.banner_btn = button("Restart now", "restart", "primary")
         self.banner_btn.clicked.connect(self._apply_changes_now)
-        bl.addWidget(self.banner_text, 1)
-        bl.addWidget(self.banner_btn)
+        self.banner_action = button("", None, "primary")
+        self.banner_action.clicked.connect(self._banner_action_clicked)
+        self.banner_action.hide()
+        self._banner_action_kind: str | None = None
+        close = QToolButton()
+        close.setText("✕")
+        close.setToolTip("Dismiss")
+        close.setCursor(Qt.PointingHandCursor)
+        close.clicked.connect(self.banner.hide)
+        bl.addWidget(self.banner_action, 0, Qt.AlignVCenter)
+        bl.addWidget(self.banner_btn, 0, Qt.AlignVCenter)
+        bl.addWidget(close, 0, Qt.AlignTop)
         self.banner.hide()
         v.addWidget(self.banner)
 
@@ -413,8 +452,13 @@ class MainWindow(QMainWindow):
         self.script_sub.setToolTip(self.spec.docstring or str(self.script_path))
         n = len(self.spec.visible())
         bools = sum(1 for v in self.spec.visible() if v.kind == script_model.KIND_BOOL)
-        self.opt_hint.setText(f"{n} options in {len(self.spec.sections)} sections ({bools} toggles), "
-                              "generated from the script. Saved per script.")
+        ns = len(self.spec.sections)
+
+        def plural(k: int, word: str) -> str:
+            return f"{k} {word}{'' if k == 1 else 's'}"
+
+        self.opt_hint.setText(f"{plural(n, 'option')} · {plural(ns, 'section')} · {plural(bools, 'toggle')}")
+        self.opt_hint.setToolTip("Generated from the script's variables. Values are saved per script.")
         if self.spec.errors:
             self._show_banner("⚠ " + "; ".join(self.spec.errors), error=True)
         elif from_disk:
@@ -482,13 +526,57 @@ class MainWindow(QMainWindow):
         if self.supervisor.is_active:
             self.supervisor.restart()
 
-    def _show_banner(self, text: str, error: bool = False) -> None:
+    def _show_banner(self, text: str, error: bool = False, title: str = "",
+                     action: str | None = None, action_label: str = "") -> None:
         self.banner.setObjectName("bannerError" if error else "banner")
         self.banner.style().unpolish(self.banner)
         self.banner.style().polish(self.banner)
+        self.banner_title.setText(title)
+        self.banner_title.setVisible(bool(title))
         self.banner_text.setText(text)
         self.banner_btn.setVisible(not error and self.supervisor.is_active)
+        self._banner_action_kind = action
+        self.banner_action.setText(action_label)
+        self.banner_action.setVisible(bool(action and action_label))
         self.banner.show()
+
+    def _banner_action_clicked(self) -> None:
+        kind = self._banner_action_kind
+        if kind in (diagnostics.ACTION_DRIVERS, diagnostics.ACTION_DEVICE):
+            self.stack.setCurrentIndex(1)
+            self.nav_buttons[1].setChecked(True)
+            if kind == diagnostics.ACTION_DEVICE and not self.supervisor.is_active:
+                self.device_page.detect()
+        elif kind == diagnostics.ACTION_SETTINGS:
+            self.stack.setCurrentIndex(3)
+        elif kind == diagnostics.ACTION_EDIT:
+            self._edit_script()
+        elif kind == diagnostics.ACTION_FOLDER:
+            self._open_workdir()
+
+    def _open_workdir(self) -> None:
+        if self.script_path:
+            QDesktopServices.openUrl(QUrl.fromLocalFile(str(session.working_dir(self.script_path))))
+
+    def _diagnose_failure(self) -> None:
+        diag = diagnostics.diagnose(list(self._recent_output), self.supervisor.last_exit_code)
+        if diag is None:
+            return
+        self._show_banner(diag.detail, error=True, title=diag.title, action=diag.action,
+                          action_label=diag.action_label)
+        key = diag.title + diag.error_line
+        if key != self._last_diagnosis:  # don't repeat the same hint on every restart
+            self._last_diagnosis = key
+            self.console.append(f"{diag.title}: {diag.detail}", "warning")
+
+    def _device_probed(self, res: Any) -> None:
+        n = len(getattr(res, "devices", []) or [])
+        if n:
+            self.side_device.setText(f"HackRF: {n} connected")
+        elif getattr(res, "pyhackrf2_available", False) or getattr(res, "hackrf_info", ""):
+            self.side_device.setText("HackRF: none found")
+        else:
+            self.side_device.setText("HackRF: drivers missing")
 
     # ============================================================= supervisor
     def _launch_factory(self):  # runs in the supervisor thread
@@ -497,6 +585,7 @@ class MainWindow(QMainWindow):
         return session.prepare_launch(self.settings, self.script_path)
 
     def _on_output(self, line: str, stream: str) -> None:  # supervisor thread
+        self._recent_output.append(line)
         self.console.append(line, stream)
         if self._logger:
             self._logger.info(("! " if stream == "stderr" else "  ") + line)
@@ -516,10 +605,17 @@ class MainWindow(QMainWindow):
         if state == State.BACKOFF and self.tray and self.settings.ui.notify and not self.isVisible():
             self.tray.showMessage(APP_NAME, f"{self.script_path.name if self.script_path else 'Script'} stopped "
                                   "unexpectedly - restarting.", QSystemTrayIcon.Warning, 4000)
+        if state == State.STARTING:
+            self._recent_output.clear()
         if state == State.RUNNING and prev in (State.STARTING,):
             self.pending_changes = False
             if self.banner.objectName() == "banner":
                 self.banner.hide()
+        if state in (State.BACKOFF, State.FAILED, State.STOPPED) and prev in (State.RUNNING, State.STARTING) \
+                and self.supervisor.last_exit_code not in (0, None) and self._recent_output:
+            self._diagnose_failure()
+        elif state == State.FAILED:
+            self._diagnose_failure()
         if state in (State.STOPPED, State.FAILED):
             self.banner_btn.setVisible(False)
             if state == State.FAILED:
@@ -536,6 +632,9 @@ class MainWindow(QMainWindow):
             return
         self.supervisor.policy = self.settings.supervisor
         self.console.append(f"Starting {self.script_path.name}", "success")
+        self._last_diagnosis = ""
+        if self.banner.objectName() == "bannerError":
+            self.banner.hide()
         self.supervisor.start()
         self._update_controls()
 
@@ -593,7 +692,7 @@ class MainWindow(QMainWindow):
         self._save_soon()
 
     def _theme_changed(self, name: str) -> None:
-        theme.apply(QApplication.instance(), name)
+        theme.apply(QApplication.instance(), name, self.settings.ui.text_size)
         self.console.refresh_theme()
         self._update_controls()
 

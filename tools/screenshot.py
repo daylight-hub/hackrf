@@ -39,7 +39,7 @@ def main() -> int:
     script = ROOT / "examples" / "spectrum_monitor.py"
     settings.overrides_for(script).update({"ENABLE_AMP": "True", "AVERAGE_BLOCKS": "2"})
     win = MainWindow(settings, str(script))
-    win.resize(1440, 900)
+    win.resize(1500, 950)
     win.show()
     suffix = "" if theme_name == "dark" else "-light"
 

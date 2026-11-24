@@ -51,7 +51,7 @@ class ConsoleView(QWidget):
         self.find = QLineEdit()
         self.find.setPlaceholderText("Find…")
         self.find.setClearButtonEnabled(True)
-        self.find.setFixedWidth(170)
+        self.find.setFixedWidth(theme.px(170))
         self.find.returnPressed.connect(self._find_next)
         bar.addWidget(self.find)
         p = theme.current()
@@ -59,7 +59,7 @@ class ConsoleView(QWidget):
         def tool(name: str, tip: str, checkable: bool = False) -> QToolButton:
             b = QToolButton()
             b.setIcon(icons.icon(name, p.text))
-            b.setIconSize(QSize(16, 16))
+            b.setIconSize(QSize(theme.px(16), theme.px(16)))
             b.setToolTip(tip)
             b.setCheckable(checkable)
             b.setCursor(Qt.PointingHandCursor)

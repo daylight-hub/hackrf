@@ -24,8 +24,12 @@ from .. import script_model as sm
 from . import icons, theme
 from .widgets import Card, NumberEdit, ToggleSwitch, button
 
-MONO = QFont()
-MONO.setFamilies(["JetBrains Mono", "Cascadia Mono", "Consolas", "DejaVu Sans Mono", "monospace"])
+
+def mono() -> QFont:
+    f = QFont()
+    f.setFamilies(["JetBrains Mono", "Cascadia Mono", "Consolas", "DejaVu Sans Mono", "monospace"])
+    f.setPointSizeF(theme.pt(10))
+    return f
 
 
 def _choice_label(value: Any, unit: str) -> str:
@@ -56,11 +60,11 @@ class SliderEditor(QWidget):
         self.slider = QSlider(Qt.Horizontal)
         self.slider.setRange(0, self.steps)
         self.slider.setPageStep(1)
-        self.slider.setFixedWidth(170)
+        self.slider.setFixedWidth(theme.px(170))
         self.label = QLabel()
-        self.label.setMinimumWidth(56)
+        self.label.setMinimumWidth(theme.px(56))
         self.label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        self.label.setFont(MONO)
+        self.label.setFont(mono())
         lay.addWidget(self.slider)
         lay.addWidget(self.label)
         self.set_value(value)
@@ -127,13 +131,13 @@ class OptionRow(QWidget):
         if var.unit and not isinstance(self.editor, (SliderEditor, QComboBox)):
             u = QLabel(var.unit)
             u.setObjectName("muted")
-            u.setMinimumWidth(24)
+            u.setMinimumWidth(theme.px(24))
             lay.addWidget(u, 0, Qt.AlignVCenter)
 
         p = theme.current()
         self.reset_btn = QToolButton()
         self.reset_btn.setIcon(icons.icon("undo", p.muted))
-        self.reset_btn.setIconSize(QSize(15, 15))
+        self.reset_btn.setIconSize(QSize(theme.px(15), theme.px(15)))
         self.reset_btn.setToolTip(f"Reset to script default ({var.source_text})")
         self.reset_btn.setCursor(Qt.PointingHandCursor)
         self.reset_btn.clicked.connect(self.reset)
@@ -154,7 +158,7 @@ class OptionRow(QWidget):
                 w.addItem(_choice_label(c, v.unit), c)
             idx = next((i for i, c in enumerate(v.choices or []) if c == value), 0)
             w.setCurrentIndex(idx)
-            w.setMinimumWidth(170)
+            w.setMinimumWidth(theme.px(170))
             w.currentIndexChanged.connect(lambda i: self._set(w.itemData(i)))
             return w
         if v.kind in (sm.KIND_INT, sm.KIND_FLOAT):
@@ -164,19 +168,19 @@ class OptionRow(QWidget):
                 w.valueChanged.connect(self._set)
                 return w
             w = NumberEdit(v, value)
-            w.setFixedWidth(170)
-            w.setFont(MONO)
+            w.setFixedWidth(theme.px(170))
+            w.setFont(mono())
             w.valueChanged.connect(self._set)
             return w
         if v.kind == sm.KIND_STR:
             w = QLineEdit(str(value))
-            w.setMinimumWidth(240)
+            w.setMinimumWidth(theme.px(240))
             w.editingFinished.connect(lambda: self._set(w.text()))
             return w
         # literal (lists, dicts, None...) edited as Python text
         w = QLineEdit(repr(value))
-        w.setFont(MONO)
-        w.setMinimumWidth(240)
+        w.setFont(mono())
+        w.setMinimumWidth(theme.px(240))
         w.setToolTip("Python literal, e.g. [1, 2, 3] or {'a': 1}")
 
         def commit() -> None:
@@ -268,7 +272,7 @@ class OptionsPanel(QWidget):
             b.setText(label)
             b.setCheckable(True)
             b.setCursor(Qt.PointingHandCursor)
-            b.setMinimumWidth(64)
+            b.setMinimumWidth(theme.px(64))
             self.group.addButton(b)
             self.filter_buttons[key] = b
             bar.addWidget(b)

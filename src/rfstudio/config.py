@@ -31,6 +31,7 @@ class SupervisorSettings:
 @dataclass
 class UiSettings:
     theme: str = "dark"
+    text_size: str = "large"         # small | normal | large | xlarge
     close_to_tray: bool = True
     start_minimized: bool = False
     notify: bool = True

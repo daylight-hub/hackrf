@@ -18,6 +18,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 
 from .config import RESTART_NEVER, RESTART_ON_FAILURE, SupervisorSettings
+from .runner import EXIT_CONFIG_ERROR
 
 IS_WINDOWS = sys.platform.startswith("win")
 
@@ -344,6 +345,13 @@ class Supervisor:
                     self._event("info", "Restarting (requested)")
                     backoff = max(0.1, float(self.policy.backoff_initial_s))
                     continue
+
+                if self.last_exit_code == EXIT_CONFIG_ERROR:
+                    self._event("error", "Not restarting: the script has an error a restart can't fix "
+                                "(see the message above).")
+                    self._want_running = False
+                    self._set_state(State.FAILED)
+                    return
 
                 policy = self.policy.restart_policy
                 failed = self.last_exit_code not in (0,)

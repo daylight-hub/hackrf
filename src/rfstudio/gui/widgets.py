@@ -38,7 +38,7 @@ class ToggleSwitch(QAbstractButton):
         self.toggled.connect(self._animate)
 
     def sizeHint(self) -> QSize:  # noqa: N802
-        return QSize(42, 24)
+        return QSize(theme.px(42), theme.px(24))
 
     def _animate(self, checked: bool) -> None:
         self._anim.stop()
@@ -221,7 +221,7 @@ def button(text: str, icon_name: str | None = None, variant: str | None = None,
         p = theme.current()
         color = p.accent_text if variant == "primary" else (p.danger if variant == "danger" else p.text)
         b.setIcon(icons.icon(icon_name, color, p.surface, disabled=p.muted))
-        b.setIconSize(QSize(16, 16))
+        b.setIconSize(QSize(theme.px(16), theme.px(16)))
     if tooltip:
         b.setToolTip(tooltip)
     b.setCursor(Qt.PointingHandCursor)

@@ -63,25 +63,37 @@ def _in_plugdev() -> bool:
     return gid in os.getgroups() or gid == os.getgid()
 
 
-def _udev_rule_present() -> bool:
+def _udev_rules() -> tuple[bool, bool]:
+    """(HackRF rule present, rule grants desktop-session access via uaccess)."""
+    present = uaccess = False
     for d in ("/etc/udev/rules.d", "/lib/udev/rules.d", "/usr/lib/udev/rules.d"):
         for f in glob.glob(f"{d}/*.rules"):
             try:
-                if "1d50" in Path(f).read_text(errors="ignore") and "6089" in Path(f).read_text(errors="ignore"):
-                    return True
+                text = Path(f).read_text(errors="ignore").lower()
             except OSError:
                 continue
-    return False
+            if "1d50" in text and "6089" in text:
+                present = True
+                uaccess = uaccess or "uaccess" in text
+    return present, uaccess
 
 
 def linux_status() -> DriverStatus:
     lib = ctypes.util.find_library("hackrf")
     tools = shutil.which("hackrf_transfer")
+    rule, uaccess = _udev_rules()
+    in_group = _in_plugdev()
+    if in_group:
+        access = Check("USB access", True, "you are in the plugdev group")
+    elif rule and uaccess:
+        access = Check("USB access", True, "granted to your desktop session by the udev rule")
+    else:
+        access = Check("USB access", False, "not in plugdev - install drivers, then log out and back in")
     st = DriverStatus(checks=[
         Check("libhackrf", bool(lib), lib or "not installed"),
         Check("hackrf tools", bool(tools), tools or "hackrf_transfer / hackrf_info not on PATH"),
-        Check("udev rules", _udev_rule_present(), "lets you use the board without root"),
-        Check("plugdev group", _in_plugdev(), "log out/in after being added"),
+        Check("udev rules", rule, "lets you use the board without root" if rule else "missing"),
+        access,
     ])
     script = linux_setup_script()
     st.can_install = bool(script) and bool(shutil.which("pkexec") or shutil.which("sudo"))

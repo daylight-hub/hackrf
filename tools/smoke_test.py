@@ -70,6 +70,21 @@ def main() -> int:
         if expect_hackrf and "ENUM" not in res.stdout:
             failures.append("pyhackrf2 could not enumerate devices inside the bundled runner")
 
+    mock = next((a.split("=", 1)[1] for a in sys.argv if a.startswith("--mock-lib=")), None)
+    if mock:
+        # Run the pyhackrf2 example in hardware mode against the simulated libhackrf
+        with tempfile.TemporaryDirectory() as tmp:
+            src = (internal / "examples" / "spectrum_monitor.py").read_text(encoding="utf-8")
+            for a, b in (("SIMULATE = True ", "SIMULATE = False"), ("RUN_FOREVER = True ", "RUN_FOREVER = False"),
+                         ("MAX_REPORTS = 60 ", "MAX_REPORTS = 2  "), ("REPORT_INTERVAL = 1.0 ", "REPORT_INTERVAL = 0.0 ")):
+                src = src.replace(a, b)
+            script = Path(tmp) / "hw_monitor.py"
+            script.write_text(src, encoding="utf-8")
+            env = dict(os.environ, LD_LIBRARY_PATH=mock)
+            res = run([str(exe), "--run-script", "--script", str(script), "--origin", str(script)], cwd=tmp, env=env)
+            if res.returncode != 0 or "(hardware)" not in res.stdout or "power" not in res.stdout:
+                failures.append("example failed against the simulated HackRF")
+
     if failures:
         print("\nSMOKE TEST FAILED:")
         for f in failures:

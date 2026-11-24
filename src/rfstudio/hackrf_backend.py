@@ -130,8 +130,15 @@ def probe_in_process(search_dirs: list[str]) -> ProbeResult:
                     tgt.source = "pyhackrf2 + hackrf_info"
                 else:
                     res.devices.append(d)
-            if "Resource busy" in out.stderr or "HACKRF_ERROR_BUSY" in out.stderr:
-                res.errors.append("Device is busy (is a script using it?)")
+            both = (out.stdout + out.stderr).lower()
+            if "resource busy" in both or "hackrf_error_busy" in both:
+                res.errors.append("The HackRF is busy - another program (or your script) is using it.")
+            if "access denied" in both or "insufficient permissions" in both:
+                res.errors.append("A HackRF is connected but you don't have permission to open it. Click "
+                                  "'Install HackRF drivers' below, then re-plug the board (and log out/in once)."
+                                  if not paths.IS_WINDOWS else
+                                  "A HackRF is connected but its USB driver isn't usable. Click "
+                                  "'Install / repair USB driver' below.")
         except (OSError, subprocess.SubprocessError) as exc:
             res.errors.append(f"hackrf_info failed: {exc}")
     for d in res.devices:

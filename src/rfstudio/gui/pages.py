@@ -35,6 +35,7 @@ from PySide6.QtWidgets import (
 )
 
 from .. import APP_NAME, __version__, autostart, config, drivers, hackrf_backend, paths, script_model, session
+from . import theme
 from .console import ConsoleView
 from .widgets import Card, StatusPill, ToggleSwitch, button, form_row, muted, page_header
 
@@ -77,6 +78,7 @@ def scroll_page(*widgets: QWidget) -> QScrollArea:
 
 class DevicePage(QWidget):
     devicesChanged = Signal(list)
+    probeFinished = Signal(object)
 
     def __init__(self, settings: config.Settings, is_script_running: Callable[[], bool]) -> None:
         super().__init__()
@@ -122,7 +124,7 @@ class DevicePage(QWidget):
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
         self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.Stretch)
-        self.table.setMinimumHeight(160)
+        self.table.setMinimumHeight(theme.px(160))
         self.dev_card.body.addWidget(self.table)
         self.status = muted("Detection briefly opens the radio. If a script is using it, the device may be reported "
                             "as busy - stop the script first.")
@@ -178,7 +180,7 @@ class DevicePage(QWidget):
         self.drv_python.setVisible(not paths.IS_WINDOWS)
         self.drv_python_label.setVisible(not paths.IS_WINDOWS)
         self.drv_console = ConsoleView(1000)
-        self.drv_console.setMinimumHeight(180)
+        self.drv_console.setMinimumHeight(theme.px(180))
         self.drv_console.hide()
         card.body.addWidget(self.drv_console)
         self.drv_proc: QProcess | None = None
@@ -244,8 +246,10 @@ class DevicePage(QWidget):
         self.drv_proc = None
         self.refresh_drivers()
 
-    def detect(self) -> None:
-        if self.is_script_running():
+    def detect(self, quiet: bool = False) -> None:
+        if quiet and self.is_script_running():
+            return
+        if not quiet and self.is_script_running():
             r = QMessageBox.question(self, "Script running",
                                      "A script is running and may be using the HackRF. Detect anyway?")
             if r != QMessageBox.Yes:
@@ -282,6 +286,7 @@ class DevicePage(QWidget):
         self.status.setText(msg)
         self.dev_card.set_badge(str(n))
         self.devicesChanged.emit([d.serial for d in res.devices if d.serial])
+        self.probeFinished.emit(res)
 
 
 # =================================================================== Transfer
@@ -293,9 +298,9 @@ def _slider(lo: int, hi: int, step: int, value: int) -> tuple[QWidget, QSlider, 
     s = QSlider(Qt.Horizontal)
     s.setRange(lo // step, hi // step)
     s.setValue(value // step)
-    s.setFixedWidth(200)
+    s.setFixedWidth(theme.px(200))
     lab = QLabel(f"{value} dB")
-    lab.setMinimumWidth(48)
+    lab.setMinimumWidth(theme.px(48))
     s.valueChanged.connect(lambda v: lab.setText(f"{v * step} dB"))
     lay.addWidget(s)
     lay.addWidget(lab)
@@ -335,7 +340,7 @@ class TransferPage(QWidget):
         fl = QHBoxLayout(file_w)
         fl.setContentsMargins(0, 0, 0, 0)
         self.file = QLineEdit(p.file)
-        self.file.setMinimumWidth(320)
+        self.file.setMinimumWidth(theme.px(320))
         self.file.setPlaceholderText("capture.cs8")
         browse = button("Browse…", "folder")
         browse.clicked.connect(self._browse)
@@ -348,7 +353,7 @@ class TransferPage(QWidget):
         self.freq.setDecimals(6)
         self.freq.setSuffix(" MHz")
         self.freq.setValue(p.frequency_hz / 1e6)
-        self.freq.setFixedWidth(180)
+        self.freq.setFixedWidth(theme.px(180))
         form.body.addWidget(form_row("Frequency", self.freq))
 
         self.rate = QComboBox()
@@ -357,7 +362,7 @@ class TransferPage(QWidget):
             self.rate.addItem(f"{r:g} Msps", r * 1e6)
         idx = self.rate.findData(p.sample_rate_hz)
         self.rate.setCurrentIndex(idx if idx >= 0 else 4)
-        self.rate.setFixedWidth(180)
+        self.rate.setFixedWidth(theme.px(180))
         form.body.addWidget(form_row("Sample rate", self.rate))
 
         self.bw = QComboBox()
@@ -365,7 +370,7 @@ class TransferPage(QWidget):
         for b in (1.75, 2.5, 3.5, 5, 5.5, 6, 7, 8, 9, 10, 12, 14, 15, 20, 24, 28):
             self.bw.addItem(f"{b:g} MHz", b * 1e6)
         self.bw.setCurrentIndex(max(0, self.bw.findData(p.baseband_filter_hz)))
-        self.bw.setFixedWidth(180)
+        self.bw.setFixedWidth(theme.px(180))
         form.body.addWidget(form_row("Baseband filter", self.bw))
 
         w, self.lna, _ = _slider(0, 40, 8, p.lna_gain)
@@ -390,7 +395,7 @@ class TransferPage(QWidget):
         self.nsamp.setSingleStep(1_000_000)
         self.nsamp.setSpecialValueText("Unlimited")
         self.nsamp.setValue(int(p.num_samples))
-        self.nsamp.setFixedWidth(180)
+        self.nsamp.setFixedWidth(theme.px(180))
         form.body.addWidget(form_row("Number of samples", self.nsamp))
         self.serial = QComboBox()
         self.serial.setEditable(True)
@@ -398,11 +403,11 @@ class TransferPage(QWidget):
         if p.serial:
             self.serial.addItem(p.serial)
             self.serial.setCurrentText(p.serial)
-        self.serial.setFixedWidth(320)
+        self.serial.setFixedWidth(theme.px(320))
         self.serial.lineEdit().setPlaceholderText("first device")
         form.body.addWidget(form_row("Device serial", self.serial))
         self.extra = QLineEdit(p.extra_args)
-        self.extra.setMinimumWidth(320)
+        self.extra.setMinimumWidth(theme.px(320))
         self.extra.setPlaceholderText("additional hackrf_transfer arguments")
         form.body.addWidget(form_row("Extra arguments", self.extra))
 
@@ -410,7 +415,7 @@ class TransferPage(QWidget):
         self.preview = QPlainTextEdit()
         self.preview.setObjectName("commandPreview")
         self.preview.setReadOnly(True)
-        self.preview.setFixedHeight(64)
+        self.preview.setFixedHeight(theme.px(64))
         run_card.body.addWidget(self.preview)
         row = QHBoxLayout()
         self.run_btn = button("Start", "play", "primary")
@@ -428,7 +433,7 @@ class TransferPage(QWidget):
         row.addWidget(self.state_pill)
         run_card.body.addLayout(row)
         self.console = ConsoleView(2000)
-        self.console.setMinimumHeight(220)
+        self.console.setMinimumHeight(theme.px(220))
         run_card.body.addWidget(self.console)
 
         lay.addWidget(scroll_page(head, form, run_card))
@@ -585,7 +590,7 @@ class SettingsPage(QWidget):
                            (config.RESTART_NEVER, "Never restart")):
             self.policy.addItem(label, key)
         self.policy.setCurrentIndex(max(0, self.policy.findData(sv.restart_policy)))
-        self.policy.setFixedWidth(220)
+        self.policy.setFixedWidth(theme.px(220))
         sup.body.addWidget(form_row("Restart policy", self.policy,
                                     "“Always” also restarts a script that finishes normally."))
         self.backoff = self._dspin(0.1, 600, sv.backoff_initial_s, " s")
@@ -646,7 +651,7 @@ class SettingsPage(QWidget):
         dl.setContentsMargins(0, 0, 0, 0)
         self.tools_dir = QLineEdit(self.s.hackrf.tools_dir)
         self.tools_dir.setPlaceholderText("auto (bundled, then PATH)")
-        self.tools_dir.setMinimumWidth(300)
+        self.tools_dir.setMinimumWidth(theme.px(300))
         b = button("Browse…", "folder")
         b.clicked.connect(lambda: self._pick_dir(self.tools_dir))
         dl.addWidget(self.tools_dir)
@@ -660,7 +665,7 @@ class SettingsPage(QWidget):
         self.py_mode.addItem("Bundled (pyhackrf2 + numpy included)", "bundled")
         self.py_mode.addItem("Custom interpreter", "custom")
         self.py_mode.setCurrentIndex(max(0, self.py_mode.findData(self.s.python.mode)))
-        self.py_mode.setFixedWidth(300)
+        self.py_mode.setFixedWidth(theme.px(300))
         py.body.addWidget(form_row("Run scripts with", self.py_mode,
                                    "Use a custom interpreter if your script needs extra packages"))
         int_w = QWidget()
@@ -668,7 +673,7 @@ class SettingsPage(QWidget):
         il.setContentsMargins(0, 0, 0, 0)
         self.interp = QLineEdit(self.s.python.interpreter)
         self.interp.setPlaceholderText("python3  or  C:\\Python312\\python.exe")
-        self.interp.setMinimumWidth(300)
+        self.interp.setMinimumWidth(theme.px(300))
         ib = button("Browse…", "folder")
         ib.clicked.connect(self._pick_interp)
         il.addWidget(self.interp)
@@ -681,8 +686,15 @@ class SettingsPage(QWidget):
         self.theme_box.addItem("Dark", "dark")
         self.theme_box.addItem("Light", "light")
         self.theme_box.setCurrentIndex(max(0, self.theme_box.findData(ui.theme)))
-        self.theme_box.setFixedWidth(160)
+        self.theme_box.setFixedWidth(theme.px(160))
         look.body.addWidget(form_row("Theme", self.theme_box, "Fully applied after restarting the app"))
+        self.text_size = QComboBox()
+        for key, label in (("small", "Small"), ("normal", "Normal"), ("large", "Large"), ("xlarge", "Extra large")):
+            self.text_size.addItem(label, key)
+        self.text_size.setCurrentIndex(max(0, self.text_size.findData(ui.text_size)))
+        self.text_size.setFixedWidth(theme.px(160))
+        look.body.addWidget(form_row("Text size", self.text_size,
+                                     "Text changes immediately; spacing updates after restarting the app"))
         self.max_lines = self._spin(500, 200000, ui.console_max_lines, suffix=" lines")
         look.body.addWidget(form_row("Console history", self.max_lines))
 
@@ -714,6 +726,8 @@ class SettingsPage(QWidget):
         self.login.toggled.connect(self._set_login)
         self.theme_box.currentIndexChanged.connect(lambda: (self._commit(), self.themeChanged.emit(
             self.theme_box.currentData())))
+        self.text_size.currentIndexChanged.connect(lambda: (self._commit(), self.themeChanged.emit(
+            self.theme_box.currentData())))
         self._sync_visibility()
         self.refresh_service()
 
@@ -728,7 +742,7 @@ class SettingsPage(QWidget):
         if special:
             w.setSpecialValueText(special)
         w.setSuffix(suffix)
-        w.setFixedWidth(150)
+        w.setFixedWidth(theme.px(150))
         w.setAlignment(Qt.AlignRight)
         return w
 
@@ -738,7 +752,7 @@ class SettingsPage(QWidget):
         w.setDecimals(1)
         w.setValue(float(value))
         w.setSuffix(suffix)
-        w.setFixedWidth(150)
+        w.setFixedWidth(theme.px(150))
         w.setAlignment(Qt.AlignRight)
         return w
 
@@ -773,6 +787,7 @@ class SettingsPage(QWidget):
         ui.notify = self.notify.isChecked()
         ui.restart_on_change = self.apply_now.isChecked()
         ui.theme = self.theme_box.currentData()
+        ui.text_size = self.text_size.currentData()
         ui.console_max_lines = self.max_lines.value()
         self.s.hackrf.tools_dir = self.tools_dir.text().strip()
         self.s.python.mode = self.py_mode.currentData()

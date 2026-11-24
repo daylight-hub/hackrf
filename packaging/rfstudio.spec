@@ -90,6 +90,13 @@ a = Analysis(
               "PySide6.QtDataVisualization", "PySide6.QtPdf", "matplotlib.tests", "numpy.tests"],
     noarchive=False,
 )
+# Never ship the build machine's libhackrf/libusb/libudev on Linux: PyInstaller picks them
+# up from pyhackrf2's CDLL("libhackrf.so.0"), but an old bundled copy would shadow the
+# system library that the .deb / install.sh installs (and that matches the udev setup).
+if not IS_WIN:
+    _system_only = ("libhackrf", "libusb-1.0", "libudev")
+    a.binaries = [b for b in a.binaries if not Path(b[0]).name.startswith(_system_only)]
+
 pyz = PYZ(a.pure)
 
 icon = str(ROOT / "assets" / ("icon.ico" if IS_WIN else "icon.png"))

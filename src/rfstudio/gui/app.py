@@ -58,7 +58,7 @@ def run_gui(args: Namespace) -> int:
 
     from . import theme
     settings = config.load()
-    theme.apply(app, settings.ui.theme)
+    theme.apply(app, settings.ui.theme, settings.ui.text_size)
 
     from .main_window import MainWindow, app_icon
     app.setWindowIcon(app_icon())

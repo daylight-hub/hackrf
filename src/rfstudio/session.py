@@ -36,6 +36,34 @@ def load_overrides(settings: Settings, script: Path, spec: script_model.ScriptSp
     return values
 
 
+def working_dir(script: Path) -> Path:
+    """Folder the script runs in (and writes relative files to).
+
+    The script's own folder when it is writable (scripts you opened yourself);
+    for scripts bundled inside an installed app (/opt/..., Program Files) that
+    folder is read-only, so use ~/RF Script Studio/<script name>/ instead.
+    """
+    folder = script.parent
+    if _writable(folder):
+        return folder
+    target = paths.user_files_dir() / script.stem
+    target.mkdir(parents=True, exist_ok=True)
+    return target
+
+
+def _writable(folder: Path) -> bool:
+    import os
+    import tempfile
+
+    if not os.access(folder, os.W_OK):
+        return False
+    try:
+        with tempfile.NamedTemporaryFile(dir=folder, prefix=".rfstudio-", delete=True):
+            return True
+    except OSError:
+        return False
+
+
 def prepare_launch(settings: Settings, script: str | Path) -> LaunchSpec:
     """Re-read and patch the script (so edits on disk are picked up on restart)."""
     script = Path(script).resolve()
@@ -61,6 +89,8 @@ def prepare_launch(settings: Settings, script: str | Path) -> LaunchSpec:
                 env["RFSTUDIO_HACKRF_DIR"] = d
                 break
     env["RFSTUDIO_SCRIPT"] = str(script)
+    workdir = working_dir(script)
+    env["RFSTUDIO_WORKDIR"] = str(workdir)
 
     runner_args = ["--script", str(patched_path), "--origin", str(script)]
     if settings.python.mode == "custom" and settings.python.interpreter:
@@ -79,7 +109,9 @@ def prepare_launch(settings: Settings, script: str | Path) -> LaunchSpec:
 
     changed = [f"{k}={v!r}" for k, v in overrides.items() if spec.by_name()[k].default != v]
     info = [f"Options changed from script defaults: {', '.join(changed)}"] if changed else []
-    return LaunchSpec(argv=argv, cwd=str(script.parent), env=env, description=desc,
+    if workdir != script.parent:
+        info.append(f"Working folder: {workdir}")
+    return LaunchSpec(argv=argv, cwd=str(workdir), env=env, description=desc,
                       notes=list(notes), info=info)
 
 
