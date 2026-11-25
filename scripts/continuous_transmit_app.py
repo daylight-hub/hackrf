@@ -3263,10 +3263,21 @@ def main():
         if BLOCK_MATCH_MODULATION:
             clusters = cluster_nearby_matching_mod(all_items)
             blocks = build_blocks_from_clusters(clusters)
-            inv_n = sum(1 for b in blocks if b.get("inverse_leveled"))
+            inv_n = sum(1 for b in blocks if b.get("inverted"))
             log(f"Clustered into {len(blocks)} block(s) by nearby+matching modulation")
-            if inv_n and not OPTION3_REALTIME_INVERSE_RX_TX:
-                log(f"  {inv_n} block(s) using last-captured modulation at inverse amplitude")
+            # Always log modulation inversion for single or multi HackRF.
+            # This is separate from the 180° carrier phase shift.
+            if not OPTION3_REALTIME_INVERSE_RX_TX:
+                in_band_inv = [b for b in blocks if b.get("inverted") and b.get("in_band")]
+                log(f"  Modulation inversion (400-800): {len(in_band_inv)} block(s)")
+                for b in in_band_inv:
+                    log(f"    [InvertMod] {b.get('center_mhz'):.1f} MHz  "
+                        f"mod={b.get('modulation','?'):<8}  "
+                        f"wave={b.get('tx_wave','?'):<10}  "
+                        f"amp={b.get('tx_amplitude', 0):.2f}  "
+                        f"src={b.get('source','')}")
+                if inv_n:
+                    log(f"  {inv_n} block(s) total using inverted modulation")
         else:
             # Legacy per-source square blocks
             seen_centers = set()
