@@ -46,7 +46,7 @@ Drop a Python script into `scripts/`. The app reads its variables and builds a s
 ## Adding your script
 
 1. Put your script in **`scripts/`** (e.g. `scripts/my_receiver.py`). Every `.py` file there is bundled into the app and listed in its script picker.
-2. If it needs packages other than `numpy` and `pyhackrf2`, list them in **`scripts/requirements.txt`**.
+2. **numpy, scipy and pyhackrf2 are included.** If the script needs any other package, list it in **`scripts/requirements.txt`**, one per line, and the next build bundles it.
 3. Commit and push. GitHub Actions builds new Linux and Windows apps with your script inside.
 
 Variables are discovered automatically. Comments are optional but improve the panel:
@@ -137,12 +137,16 @@ When a script stops with an error, a banner explains it in plain English with a 
 | **No permission to open the HackRF** | Linux: Device → *Install HackRF drivers*, then unplug and re-plug the board (log out/in once if you were just added to `plugdev`). Windows: Device → *Install / repair USB driver* (Zadig → WinUSB). |
 | **The HackRF is in use by another program** | Close other SDR software (GQRX, SDR++, `hackrf_transfer`, the background service) and press Start. |
 | **No HackRF found** | Plug it in directly (not through a hub) and press Device → *Detect devices*. |
-| **The script needs the Python package "x"** | Add `x` to `scripts/requirements.txt` and push, so the next build includes it. |
+| **The script needs Python package(s) …** | numpy, scipy and pyhackrf2 are already included. Add any other package to `scripts/requirements.txt` and push, so the next build includes it. The app stops instead of restarting over and over, because a restart can't install a package. |
 | **The script isn't allowed to write a file** | Relative paths go to the working folder (below). |
 
 Errors a restart can't fix, such as a syntax error or a missing package, stop the script instead of restarting it over and over.
 
 **Working folder:** a script you open from your own folders runs in its own folder. Scripts bundled with the app run from a copy in `~/RF Script Studio/<script name>/` (`%USERPROFILE%\RF Script Studio\...` on Windows), because the install folder is read-only. Files saved with relative paths or next to the script (`Path(__file__).parent / "backups"`) end up there, and they're kept across updates. The folder button next to the script name opens it.
+
+**Scripts that install their own packages:** inside the app, `sys.executable` behaves like `python`:
+- `[sys.executable, "-m", "pip", "install", "numpy", "scipy"]` answers "already satisfied" for bundled packages. Anything not included gets a clear error, because nothing can be installed into a packaged app.
+- A script that restarts itself with `os.execv(sys.executable, …)` comes back with the app's option values.
 
 **Stopping cleanly:** Stop sends Ctrl+C on Linux and an equivalent stop request on Windows. Your script gets a `KeyboardInterrupt`, so its `finally:` / `except KeyboardInterrupt:` code runs (for example, switching the transmitter off) before it's force-closed.
 

@@ -163,6 +163,7 @@ def prepare_launch(settings: Settings, script: str | Path, args: list[str] | Non
         # paths (Path(__file__).parent / "backups") work too.
         origin = mirror_script_folder(script, workdir)
     env["RFSTUDIO_SCRIPT"] = str(origin)
+    env["RFSTUDIO_PATCHED_SCRIPT"] = str(patched_path)
     env["RFSTUDIO_BUNDLED_SCRIPT"] = str(script)
     env["RFSTUDIO_WORKDIR"] = str(workdir)
 

@@ -253,6 +253,42 @@ def _start_stop_listener() -> None:
     threading.Thread(target=watch, name="rfstudio-stop", daemon=True).start()
 
 
+def install_exec_compat(force: bool = False) -> None:
+    """Windows has no real exec(): os.execv() starts a new process and ends this one, so the
+    supervisor would think the script stopped and start a second copy. Instead run the new
+    program as a child, wait for it (forwarding Stop), and exit with its code."""
+    if not (force or sys.platform.startswith("win")):
+        return
+    import subprocess
+
+    def _exec(path, args, env=None):  # type: ignore[no-untyped-def]
+        for stream in (sys.stdout, sys.stderr):
+            try:
+                stream.flush()
+            except (AttributeError, OSError, ValueError):
+                pass
+        child = subprocess.Popen([os.fspath(path), *[os.fspath(a) for a in list(args)[1:]]],
+                                 env=env, stdin=subprocess.PIPE)
+        try:
+            code = child.wait()
+        except KeyboardInterrupt:  # Stop pressed: pass it on so the new copy cleans up too
+            try:
+                child.stdin.write(STOP_TOKEN + b"\n")
+                child.stdin.flush()
+                child.stdin.close()
+            except (OSError, ValueError):
+                pass
+            try:
+                code = child.wait(10)
+            except subprocess.TimeoutExpired:
+                child.kill()
+                code = 130
+        os._exit(code)
+
+    os.execv = lambda path, args: _exec(path, args)  # type: ignore[assignment]
+    os.execve = lambda path, args, env: _exec(path, args, env)  # type: ignore[assignment]
+
+
 def _line_buffer_stdio() -> None:
     for stream in (sys.stdout, sys.stderr):
         try:
@@ -272,6 +308,7 @@ def main(args: list[str] | None = None) -> None:
     _line_buffer_stdio()
     if os.environ.get("RFSTUDIO_STOP_PIPE") == "1":
         _start_stop_listener()
+    install_exec_compat(force=os.environ.get("RFSTUDIO_EXEC_COMPAT") == "1")
     origin = ns.origin or ns.script
     try:
         run_script(ns.script, origin, extra, ns.hackrf_dir)

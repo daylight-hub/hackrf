@@ -9,7 +9,7 @@ import threading
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
-from . import APP_NAME, __version__, config, paths, session
+from . import APP_NAME, __version__, config, diagnostics, paths, session
 from .supervisor import State, Supervisor
 
 
@@ -57,6 +57,7 @@ def run(script_arg: str | None) -> int:
         on_output=lambda line, stream: emit(("! " if stream == "stderr" else "  ") + line),
         on_state=on_state,
         on_event=lambda level, msg: emit(f"[{level}] {msg}"),
+        fatal_check=diagnostics.fatal_reason,
     )
 
     def shutdown(*_args: object) -> None:

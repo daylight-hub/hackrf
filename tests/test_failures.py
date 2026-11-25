@@ -242,3 +242,66 @@ def test_frozen_runner_finds_bundled_hackrf_dir(tmp_path, monkeypatch):
     monkeypatch.setattr(sys, "platform", "win32")
     cands = runner._library_candidates(None)
     assert cands[0] == str(bundle / "hackrf" / "hackrf-0.dll")
+
+
+# ------------------------------------------------- python-compatible executable
+
+def _cli(args, **env):
+    e = dict(os.environ, PYTHONPATH=str(ROOT / "src"), **env)
+    return subprocess.run([sys.executable, "-m", "rfstudio", *args], capture_output=True, text=True,
+                          timeout=60, env=e)
+
+
+def test_pip_install_answered_from_bundle():
+    out = _cli(["-m", "pip", "install", "--user", "-q", "numpy>=1.20", "scipy"])
+    assert out.returncode == 0, out.stderr
+    assert "already satisfied: numpy" in out.stdout and "scipy" in out.stdout
+    out = _cli(["-m", "pip", "install", "numpy", "definitely-not-a-package"])
+    assert out.returncode == 1 and "definitely-not-a-package" in out.stderr
+    assert "requirements.txt" in out.stderr
+
+
+def test_script_restart_via_executable_keeps_options(tmp_path):
+    origin = tmp_path / "app.py"
+    origin.write_text("FLAG = False\n")
+    patched = tmp_path / "patched.py"
+    patched.write_text("import sys\nFLAG = True\nprint('FLAG', FLAG, sys.argv[1:], __file__.endswith('app.py'))\n")
+    out = _cli([str(origin), "--scan"], RFSTUDIO_SCRIPT=str(origin), RFSTUDIO_PATCHED_SCRIPT=str(patched))
+    assert out.returncode == 0, out.stderr
+    assert "FLAG True ['--scan'] True" in out.stdout
+
+
+def test_missing_package_stops_restart_loop(tmp_path):
+    script = tmp_path / "needs.py"
+    script.write_text("import sys\ntry:\n    import notarealpkg\nexcept ImportError:\n"
+                      "    print('Missing dependencies. Please run: pip install numpy notarealpkg')\n"
+                      "    sys.exit(1)\n")
+    events = []
+    sup = Supervisor(lambda: session.prepare_launch(config.Settings(), script),
+                     config.SupervisorSettings(backoff_initial_s=0.1),
+                     on_event=lambda lvl, m: events.append(m), fatal_check=diagnostics.fatal_reason)
+    sup.start()
+    deadline = time.time() + 30
+    while sup.is_active and time.time() < deadline:
+        time.sleep(0.05)
+    assert sup.state == State.FAILED and sup.restart_count == 0
+    assert any("notarealpkg" in e and "Not restarting" in e for e in events)
+    d = diagnostics.diagnose(["Please run: pip install numpy notarealpkg"], 1)
+    assert "notarealpkg" in d.title and "notarealpkg" in d.detail and "numpy" not in d.detail.split(":")[1]
+
+
+def test_long_running_crash_still_restarts():
+    assert diagnostics.fatal_reason(["pip install foo"], 120.0, 1) is None
+
+
+def test_windows_style_exec_waits_for_restarted_copy(tmp_path):
+    """os.execv emulation: parent waits for the new copy and exits with its code."""
+    script = tmp_path / "re.py"
+    script.write_text("import os, sys\nprint('run', os.environ.get('N', '0'), flush=True)\n"
+                      "if not os.environ.get('N'):\n    os.environ['N'] = '1'\n"
+                      "    os.execv(sys.executable, [sys.executable, __file__])\nsys.exit(3)\n")
+    spec = session.prepare_launch(config.Settings(), script)
+    env = dict(spec.env, RFSTUDIO_EXEC_COMPAT="1")
+    out = subprocess.run(spec.argv, cwd=spec.cwd, env=env, capture_output=True, text=True, timeout=60)
+    assert out.stdout.split() == ["run", "0", "run", "1"], out.stderr
+    assert out.returncode == 3

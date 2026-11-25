@@ -33,6 +33,46 @@ def _last_error_line(lines: list[str]) -> str:
     return lines[-1].strip() if lines else ""
 
 
+_PIP_RE = re.compile(r"\bpip3?(?:\.exe)?\s+install\s+(.+)", re.I)
+_REQ_TOKEN = re.compile(r"^[A-Za-z][\w.\-]*(\[[\w,\-]+\])?([<>=!~]=?[\w.*]+)?$")
+_STOP_WORDS = {"and", "or", "then", "to", "first", "&&", "||", ";", "|", "please", "before", "again"}
+
+
+def missing_packages(lines: list[str]) -> list[str]:
+    """Packages a script reported as missing ("No module named 'x'", "pip install x y")."""
+    found: list[str] = []
+    for line in lines:
+        for m in re.finditer(r"No module named '([^']+)'", line):
+            found.append(m.group(1).split(".")[0])
+        m = _PIP_RE.search(line)
+        if m:
+            for tok in re.split(r"[\s,]+", m.group(1).strip().strip("`'\".")):
+                tok = tok.strip("`'\".")
+                if not tok or tok.lower() in _STOP_WORDS:
+                    if found and tok.lower() in _STOP_WORDS:
+                        break
+                    continue
+                if tok.startswith("-"):
+                    continue
+                if _REQ_TOKEN.match(tok):
+                    found.append(re.split(r"[<>=!~\[]", tok, maxsplit=1)[0])
+    seen: list[str] = []
+    for f in found:
+        if f.lower() not in [s.lower() for s in seen]:
+            seen.append(f)
+    return seen
+
+
+def fatal_reason(lines: list[str], run_time: float, exit_code: int | None) -> str | None:
+    """Should the supervisor stop restarting? (restarting can't fix a missing package)"""
+    if run_time > 20:  # it ran for a while: a later crash is worth retrying
+        return None
+    pkgs = missing_packages(lines)
+    if pkgs:
+        return f"the script needs Python package(s) {', '.join(pkgs)}"
+    return None
+
+
 def diagnose(lines: list[str], exit_code: int | None = None) -> Diagnosis | None:
     """`lines` are the last stderr/stdout lines of a failed run."""
     if not lines and exit_code in (None, 0):
@@ -73,14 +113,24 @@ def diagnose(lines: list[str], exit_code: int | None = None) -> Diagnosis | None
             "Install the HackRF drivers from the Device page, then press Start again.",
             ACTION_DRIVERS, "Open Device page", err)
 
-    m = re.search(r"No module named '([^']+)'", text)
-    if m:
-        mod = m.group(1).split(".")[0]
-        return Diagnosis(
-            f"The script needs the Python package “{mod}”",
-            f"“{mod}” isn't included in this build. Add a line “{mod}” to scripts/requirements.txt in the "
-            "repository and push (the next build bundles it), or choose a Python interpreter that has it in "
-            "Settings → Python.", ACTION_SETTINGS, "Open Settings", err)
+    pkgs = missing_packages(lines)
+    if pkgs:
+        from . import pycompat
+
+        missing = [p for p in pkgs if not pycompat.is_available(p)]
+        names = ", ".join(f"“{p}”" for p in pkgs)
+        if missing:
+            detail = (f"Not included in this build: {', '.join(missing)}. Add "
+                      f"{'it' if len(missing) == 1 else 'them'} to scripts/requirements.txt in the repository "
+                      "(one per line) and push - the next build bundles "
+                      f"{'it' if len(missing) == 1 else 'them'}. Or choose a Python interpreter that has "
+                      f"{'it' if len(missing) == 1 else 'them'} in Settings → Python.")
+        else:
+            detail = ("This build includes them, but the script's own check still failed. It may check for a "
+                      "specific version or submodule - see the console. Using your own Python interpreter "
+                      "(Settings → Python) is a quick workaround.")
+        return Diagnosis(f"The script needs Python package{'s' if len(pkgs) > 1 else ''} {names}", detail,
+                         ACTION_SETTINGS, "Open Settings", err)
 
     if "syntaxerror" in low or "indentationerror" in low:
         m = re.search(r'line (\d+)', text)

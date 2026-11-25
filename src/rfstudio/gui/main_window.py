@@ -100,6 +100,7 @@ class MainWindow(QMainWindow):
             on_output=self._on_output,
             on_state=lambda s: self.bridge.state.emit(s.value),
             on_event=lambda lvl, msg: self.bridge.event.emit(lvl, msg),
+            fatal_check=diagnostics.fatal_reason,
         )
 
         self._build_ui()

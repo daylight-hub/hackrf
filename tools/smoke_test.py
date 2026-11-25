@@ -56,7 +56,7 @@ def main() -> int:
     with tempfile.TemporaryDirectory() as tmp:
         script = Path(tmp) / "probe_script.py"
         script.write_text(
-            "import sys, numpy\n"
+            "import sys, numpy, scipy\nfrom scipy import signal\n"
             "FLAG = False\n"
             "try:\n"
             "    from pyhackrf2 import HackRF\n"
@@ -66,7 +66,11 @@ def main() -> int:
             "print('FLAG', FLAG, 'numpy', numpy.__version__)\n", encoding="utf-8")
         res = run([str(exe), "--run-script", "--script", str(script), "--origin", str(script)], cwd=tmp)
         if "FLAG False" not in res.stdout:
-            failures.append("bundled runner could not execute a script")
+            failures.append("bundled runner could not execute a script (numpy/scipy/pyhackrf2)")
+
+    res = run([str(exe), "-m", "pip", "install", "numpy", "scipy"])
+    if res.returncode != 0 or "already satisfied: scipy" not in res.stdout:
+        failures.append("pip emulation does not report bundled numpy/scipy")
         if expect_hackrf and "ENUM" not in res.stdout:
             failures.append("pyhackrf2 could not enumerate devices inside the bundled runner")
 

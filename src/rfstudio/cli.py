@@ -32,6 +32,12 @@ def _parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
 
+    # Scripts use sys.executable like `python` (pip install, restart themselves, run helpers)
+    from . import pycompat
+
+    if pycompat.looks_like_python_call(argv):
+        return pycompat.run(argv)
+
     # Internal: execute a user script (used by the supervisor).
     if argv[:1] == ["--run-script"]:
         from . import runner

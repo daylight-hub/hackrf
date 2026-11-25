@@ -47,7 +47,12 @@ def importable(name):
         return False
 
 
-hidden = {"pyhackrf2", "pyhackrf2.cinterface", "numpy"}
+# Always bundled for scripts (SDR scripts very often use scipy.signal / scipy.fft)
+BUNDLED = ("numpy", "scipy", "pyhackrf2")
+hidden = {"pyhackrf2", "pyhackrf2.cinterface", "numpy", "numpy.fft", "numpy.random",
+          "scipy", "scipy.signal", "scipy.fft", "scipy.fftpack", "scipy.ndimage", "scipy.interpolate",
+          "scipy.optimize", "scipy.stats", "scipy.io", "scipy.io.wavfile", "scipy.special", "scipy.linalg",
+          "scipy.integrate", "scipy.spatial", "scipy.sparse", "scipy.cluster"}
 for m in script_imports():
     top = m.split(".")[0]
     if top in STDLIB or importable(m):
@@ -79,13 +84,24 @@ if drivers_vendor.is_dir() and any(drivers_vendor.iterdir()):
 if not IS_WIN:
     datas.append((str(ROOT / "packaging" / "linux" / "linux-setup.sh"), "setup"))
 
+# dist-info metadata so `importlib.metadata.version("scipy")` and pip-style checks work
+from PyInstaller.utils.hooks import copy_metadata  # noqa: E402
+
+for pkg in BUNDLED:
+    try:
+        datas += copy_metadata(pkg)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[spec] warning: no metadata for {pkg}: {exc}")
+
 a = Analysis(
     [str(ROOT / "packaging" / "launcher.py")],
     pathex=[str(ROOT / "src")],
     binaries=[],
     datas=datas,
     hiddenimports=sorted(hidden),
-    excludes=["tkinter", "PySide6.QtWebEngineCore", "PySide6.QtWebEngineWidgets", "PySide6.Qt3DCore",
+    # pkg_resources/setuptools aren't used at runtime; their PyInstaller start-up hook can crash
+    # when a distro's setuptools is unbundled, taking the whole app down.
+    excludes=["pkg_resources", "setuptools", "_distutils_hack", "tkinter", "PySide6.QtWebEngineCore", "PySide6.QtWebEngineWidgets", "PySide6.Qt3DCore",
               "PySide6.QtQuick", "PySide6.QtQml", "PySide6.QtMultimedia", "PySide6.QtCharts",
               "PySide6.QtDataVisualization", "PySide6.QtPdf", "matplotlib.tests", "numpy.tests"],
     noarchive=False,

@@ -12,6 +12,7 @@ license = { text = "MIT" }
 dependencies = [
     "PySide6>=6.6",
     "numpy>=1.24",
+    "scipy>=1.10",
     "pyhackrf2>=1.0.3",
 ]
 

@@ -115,12 +115,15 @@ class Supervisor:
         on_output: OutputCallback | None = None,
         on_state: StateCallback | None = None,
         on_event: EventCallback | None = None,
+        fatal_check: Callable[[list[str], float, int | None], str | None] | None = None,
     ) -> None:
         self._factory = launch_factory
         self.policy = policy or SupervisorSettings()
         self._on_output = on_output or (lambda line, stream: None)
         self._on_state = on_state or (lambda state: None)
         self._on_event = on_event or (lambda level, msg: None)
+        self._fatal_check = fatal_check
+        self._tail: deque[str] = deque(maxlen=80)
 
         self._lock = threading.RLock()
         self._wake = threading.Event()
@@ -231,6 +234,7 @@ class Supervisor:
                 line = raw.decode("utf-8", errors="replace").rstrip("\r\n")
                 for part in line.split("\r"):
                     if part:
+                        self._tail.append(part)
                         self._on_output(part, name)
         except (OSError, ValueError):
             pass
@@ -315,6 +319,7 @@ class Supervisor:
                     manual = False
                 else:
                     self._proc = proc
+                    self._tail.clear()
                     self.started_at = time.monotonic()
                     self._last_output = self.started_at
                     readers = [
@@ -358,6 +363,18 @@ class Supervisor:
                     self._event("info", "Restarting (requested)")
                     backoff = max(0.1, float(self.policy.backoff_initial_s))
                     continue
+
+                reason = None
+                if self._fatal_check is not None and self.last_exit_code is not None:
+                    try:
+                        reason = self._fatal_check(list(self._tail), run_time, self.last_exit_code)
+                    except Exception:  # noqa: BLE001
+                        reason = None
+                if reason:
+                    self._event("error", f"Not restarting: {reason}. Restarting won't fix that.")
+                    self._want_running = False
+                    self._set_state(State.FAILED)
+                    return
 
                 if self.last_exit_code == EXIT_CONFIG_ERROR:
                     self._event("error", "Not restarting: the script has an error a restart can't fix "
