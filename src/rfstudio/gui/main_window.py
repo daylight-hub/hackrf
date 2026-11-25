@@ -31,7 +31,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from .. import APP_NAME, __version__, config, diagnostics, paths, script_model, session
+from .. import APP_NAME, __version__, config, diagnostics, paths, report_format, script_model, session
 from ..headless import make_script_logger
 from ..supervisor import State, Supervisor
 from . import icons, theme
@@ -41,7 +41,7 @@ from .options_panel import OptionsPanel
 from .pages import DevicePage, SettingsPage, TransferPage
 from .widgets import Card, Stat, StatusPill, button, muted
 
-POLICY_LABEL = {config.RESTART_ALWAYS: "Always", config.RESTART_ON_FAILURE: "On failure",
+POLICY_LABEL = {config.RESTART_ALWAYS: "Always", config.RESTART_ON_FAILURE: "If it crashes",
                 config.RESTART_NEVER: "Never"}
 
 
@@ -614,6 +614,22 @@ class MainWindow(QMainWindow):
             self._edit_script()
         elif kind == diagnostics.ACTION_FOLDER:
             self._open_workdir()
+        elif kind == diagnostics.ACTION_RESULTS:
+            self.commands_page.show_files(getattr(self, "_result_files", []), "Results")
+            self.show_page("commands")
+
+    def _show_finished(self) -> None:
+        workdir = str(session.working_dir(self.script_path))
+        self._result_files = report_format.find_output_files(list(self._recent_output), workdir)
+        names = ", ".join(Path(f).name for f in self._result_files)
+        text = (f"Results saved to {names}." if self._result_files else
+                "It ended normally, so it wasn't restarted.")
+        self._show_banner(text, title=f"{self.script_path.name} finished",
+                          action=diagnostics.ACTION_RESULTS if self._result_files else None,
+                          action_label="View results")
+        if self.tray and self.settings.ui.notify and not self.isVisible():
+            self.tray.showMessage(APP_NAME, f"{self.script_path.name} finished. {text}",
+                                  QSystemTrayIcon.Information, 5000)
 
     def _open_workdir(self) -> None:
         if self.script_path:
@@ -652,7 +668,7 @@ class MainWindow(QMainWindow):
             self._logger.info(("! " if stream == "stderr" else "  ") + line)
 
     def _on_event(self, level: str, msg: str) -> None:
-        kind = {"info": "info", "warning": "warning", "error": "error"}.get(level, "info")
+        kind = {"info": "info", "warning": "warning", "error": "error", "success": "success"}.get(level, "info")
         self.console.append(msg, kind)
         if self._logger:
             self._logger.info(f"[{level}] {msg}")
@@ -677,6 +693,9 @@ class MainWindow(QMainWindow):
             self._diagnose_failure()
         elif state == State.FAILED:
             self._diagnose_failure()
+        elif state == State.STOPPED and prev in (State.RUNNING, State.STARTING) \
+                and self.supervisor.last_exit_code == 0 and self.script_path:
+            self._show_finished()
         if state in (State.STOPPED, State.FAILED):
             self.banner_btn.setVisible(False)
             if state == State.FAILED:

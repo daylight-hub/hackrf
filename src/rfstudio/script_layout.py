@@ -22,7 +22,7 @@ CATEGORY_ORDER = ["Radio", "Transmit", "Receive", "Detection", "Signal", "Timing
 
 _RULES: list[tuple[str, set[str]]] = [
     ("Transmit", {"tx", "transmit", "transmitter", "transmitting", "txvga", "ptt", "beacon", "payload", "jam",
-                  "repeat", "repeats", "replay", "broadcast", "dry"}),
+                  "repeat", "repeats", "replay", "broadcast", "dry", "hop", "hopping", "carrier"}),
     # radio hardware words win over generic signal words ("ANTENNA_POWER" is hardware)
     ("Radio", {"antenna", "bias", "tee", "amp", "amplifier", "hackrf", "serial", "device", "ppm"}),
     # explicit time words win over what is being timed ("SCAN_INTERVAL_S" is timing)
@@ -98,7 +98,8 @@ def infer_unit(var: sm.ScriptVariable) -> str:
     toks = tokens(var.name)
     last = toks[-1] if toks else ""
     val = var.default if isinstance(var.default, (int, float)) else 0
-    for t, unit in (("hz", "Hz"), ("dbm", "dBm"), ("db", "dB"), ("ms", "ms"), ("pct", "%"), ("percent", "%")):
+    for t, unit in (("ghz", "GHz"), ("mhz", "MHz"), ("khz", "kHz"), ("hz", "Hz"), ("dbm", "dBm"), ("db", "dB"),
+                    ("ms", "ms"), ("pct", "%"), ("percent", "%")):
         if t in toks:
             return unit
     if last in ("s", "sec", "secs", "seconds"):
@@ -149,6 +150,18 @@ def is_dangerous(var: sm.ScriptVariable) -> bool:
     return bool({"tx", "transmit", "transmitting", "transmitter", "ptt", "jam", "broadcast"} & toks)
 
 
+_UNIT_TOKENS = {"hz", "khz", "mhz", "ghz", "s", "sec", "secs", "seconds", "ms", "db", "dbm", "pct", "percent"}
+
+
+def tidy_label(var: sm.ScriptVariable) -> None:
+    """'HOP_SPEED_HZ' -> 'Hop speed' when the unit is shown next to the value anyway."""
+    if var.label or not var.unit:
+        return
+    toks = tokens(var.name)
+    if len(toks) > 1 and toks[-1] in _UNIT_TOKENS:
+        var.label = sm.humanize("_".join(toks[:-1]))
+
+
 def organize(spec: sm.ScriptSpec) -> None:
     if not spec.variables:
         return
@@ -156,6 +169,7 @@ def organize(spec: sm.ScriptSpec) -> None:
         var.unit = infer_unit(var)
         infer_range(var)
         var.danger = is_dangerous(var)
+        tidy_label(var)
         var.section = nice_title(var.section)
         var.category = category_for(var)
 

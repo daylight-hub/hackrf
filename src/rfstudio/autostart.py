@@ -2,7 +2,7 @@
 
 * Launch at login starts the desktop app minimised to the tray.
 * The background service runs the headless supervisor and is itself restarted
-  by the OS if it ever exits (systemd ``Restart=always`` / Task Scheduler
+  by the OS if it ever exits (systemd ``Restart=on-failure`` / Task Scheduler
   restart-on-failure), giving two layers of "keep it running".
 """
 
@@ -114,7 +114,7 @@ def systemd_unit_text(script: str) -> str:
         "[Service]\n"
         "Type=simple\n"
         f"ExecStart={exec_start}\n"
-        "Restart=always\n"
+        "Restart=on-failure\n"
         "RestartSec=5\n"
         "KillSignal=SIGINT\n"
         "TimeoutStopSec=20\n"

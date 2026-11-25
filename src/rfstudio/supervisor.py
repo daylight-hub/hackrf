@@ -386,6 +386,9 @@ class Supervisor:
                 policy = self.policy.restart_policy
                 failed = self.last_exit_code not in (0,)
                 if policy == RESTART_NEVER or (policy == RESTART_ON_FAILURE and not failed):
+                    if not failed:
+                        self._event("success", f"Finished (exit code 0 after {run_time:.0f}s) - not restarting "
+                                    "because it ended normally")
                     self._want_running = False
                     self._set_state(State.FAILED if failed else State.STOPPED)
                     return

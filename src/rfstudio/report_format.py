@@ -170,3 +170,128 @@ def sort_key(cell: str) -> tuple[int, float | str]:
         except ValueError:
             pass
     return (1, cell.lower())
+
+
+# ------------------------------------------------------------- result files
+
+_ABS_PATH = re.compile(r"((?:[A-Za-z]:[\\/]|/|~[\\/])[^\n\"'<>|*?]*?\.(?:json|csv|tsv))(?=[\s\"').,;:]*$|[\s\"')])",
+                       re.I)
+_REL_PATH = re.compile(r"(?<![\w/\\.-])([\w.\-]+(?:[\\/][\w.\-]+)*\.(?:json|csv|tsv))\b", re.I)
+MAX_ROWS = 5000
+
+
+def find_output_files(lines: list[str], cwd: str | None) -> list[str]:
+    """Existing .json/.csv files mentioned in the output (e.g. 'Results written to: x.json')."""
+    import os
+
+    found: list[str] = []
+    for line in lines:
+        for m in _ABS_PATH.finditer(line):
+            p = os.path.expanduser(m.group(1).strip())
+            if os.path.isfile(p):
+                found.append(os.path.abspath(p))
+        if cwd:
+            for m in _REL_PATH.finditer(line):
+                p = os.path.join(cwd, m.group(1))
+                if os.path.isfile(p):
+                    found.append(os.path.abspath(p))
+    out: list[str] = []
+    for f in found:
+        if f not in out:
+            out.append(f)
+    return out
+
+
+def _fmt(v: object) -> str:
+    if isinstance(v, bool) or v is None:
+        return str(v)
+    if isinstance(v, float):
+        if v.is_integer() and abs(v) < 1e15:
+            return str(int(v))
+        return f"{v:.6g}" if abs(v) >= 1e6 or abs(v) < 1e-3 else f"{v:.6f}".rstrip("0").rstrip(".")
+    if isinstance(v, (list, tuple)):
+        if all(not isinstance(x, (dict, list, tuple)) for x in v):
+            return ", ".join(_fmt(x) for x in v)
+        import json
+        return json.dumps(v)
+    if isinstance(v, dict):
+        import json
+        return json.dumps(v)
+    return str(v)
+
+
+def _table_from_records(records: list[dict]) -> Block:
+    keys: list[str] = []
+    for r in records[:MAX_ROWS]:
+        for k in r:
+            if k not in keys:
+                keys.append(k)
+    rows = [[_fmt(r.get(k, "")) for k in keys] for r in records[:MAX_ROWS]]
+    return Block("table", headers=[str(k) for k in keys], rows=rows)
+
+
+def _blocks_from_json(data: object, title: str) -> list[Block]:
+    blocks: list[Block] = []
+    if isinstance(data, list):
+        if data and all(isinstance(x, dict) for x in data):
+            blocks += [Block("title", text=title), _table_from_records(data)]
+        elif data and all(isinstance(x, (list, tuple)) for x in data):
+            width = max(len(x) for x in data)
+            blocks += [Block("title", text=title),
+                       Block("table", headers=[f"Column {i + 1}" for i in range(width)],
+                             rows=[[_fmt(c) for c in x] + [""] * (width - len(x)) for x in data[:MAX_ROWS]])]
+        else:
+            blocks += [Block("title", text=title),
+                       Block("table", headers=["Value"], rows=[[_fmt(x)] for x in data[:MAX_ROWS]])]
+        return blocks
+    if isinstance(data, dict):
+        scalars = [(k, v) for k, v in data.items() if not isinstance(v, (dict, list))
+                   or (isinstance(v, list) and all(not isinstance(x, (dict, list)) for x in v) and len(v) <= 12)]
+        if scalars:
+            blocks += [Block("title", text=title),
+                       Block("kv", headers=["Item", "Value"], rows=[[str(k), _fmt(v)] for k, v in scalars])]
+        # {key: {field: value}} -> one table with the key as first column
+        nested = {k: v for k, v in data.items() if isinstance(v, dict)}
+        if nested and all(not any(isinstance(x, (dict, list)) for x in v.values()) for v in nested.values()) \
+                and len(nested) > 1:
+            records = [{"Key": k, **v} for k, v in nested.items()]
+            blocks += [Block("title", text=title if not scalars else f"{title}: details"),
+                       _table_from_records(records)]
+            nested = {}
+        for k, v in data.items():
+            if (k, v) in [(a, b) for a, b in scalars]:
+                continue
+            if isinstance(v, (dict, list)) and (k in nested or isinstance(v, list)):
+                blocks += _blocks_from_json(v, str(k))
+        return blocks
+    return [Block("title", text=title), Block("text", text=_fmt(data))]
+
+
+def file_blocks(path: str) -> list[Block]:
+    """Render a JSON / CSV result file as titles + tables."""
+    import csv
+    import json
+    import os
+
+    name = os.path.basename(path)
+    try:
+        if path.lower().endswith(".json"):
+            with open(path, encoding="utf-8") as fh:
+                data = json.load(fh)
+            blocks = _blocks_from_json(data, name)
+            return blocks or [Block("text", text="(empty)")]
+        with open(path, encoding="utf-8", newline="") as fh:
+            sample = fh.read(4096)
+            fh.seek(0)
+            try:
+                dialect = csv.Sniffer().sniff(sample, delimiters=",;\t")
+            except csv.Error:
+                dialect = csv.excel_tab if path.lower().endswith(".tsv") else csv.excel
+            rows = [r for r in csv.reader(fh, dialect)][: MAX_ROWS + 1]
+        if not rows:
+            return [Block("text", text="(empty)")]
+        width = max(len(r) for r in rows)
+        rows = [r + [""] * (width - len(r)) for r in rows]
+        return [Block("title", text=name), Block("table", headers=rows[0], rows=rows[1:])]
+    except (OSError, ValueError, UnicodeDecodeError) as exc:
+        return [Block("text", text=f"Could not read {name}: {exc}")]

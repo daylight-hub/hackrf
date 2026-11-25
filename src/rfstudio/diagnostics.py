@@ -12,6 +12,7 @@ ACTION_DEVICE = "device"       # open Device page / detect
 ACTION_SETTINGS = "settings"   # open Settings (e.g. Python interpreter)
 ACTION_EDIT = "edit"           # open the script in an editor
 ACTION_FOLDER = "folder"       # open the working folder
+ACTION_RESULTS = "results"     # show result files on the Commands page
 
 
 @dataclass

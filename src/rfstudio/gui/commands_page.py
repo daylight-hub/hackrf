@@ -11,7 +11,8 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from PySide6.QtCore import QProcess, QProcessEnvironment, Qt, Signal
+from PySide6.QtCore import QProcess, QProcessEnvironment, Qt, QUrl, Signal
+from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
@@ -50,10 +51,13 @@ class ResultView(QWidget):
     """Output of one command run: formatted (tables, summaries) or raw."""
 
     rerun = Signal(list)
+    stopRequested = Signal()
 
-    def __init__(self, title: str, args: list[str]) -> None:
+    def __init__(self, title: str, args: list[str], cwd: str | None = None) -> None:
         super().__init__()
         self.args = args
+        self.cwd = cwd
+        self.files: list[str] = []
         self.raw = ""
         self.blocks: list[report_format.Block] = []
         self.started = time.time()
@@ -64,7 +68,7 @@ class ResultView(QWidget):
         head = QHBoxLayout()
         t = QLabel(title)
         t.setObjectName("scriptName")
-        cmd = QLabel(" ".join(shlex.quote(a) for a in args))
+        cmd = QLabel(" ".join(shlex.quote(a) for a in args) if args else "result files")
         cmd.setObjectName("optionName")
         tl = QVBoxLayout()
         tl.setSpacing(2)
@@ -86,8 +90,12 @@ class ResultView(QWidget):
         save_btn.clicked.connect(self._save)
         again = button("Run again", "reload", "ghost")
         again.clicked.connect(lambda: self.rerun.emit(self.args))
+        self.stop_btn = button("Stop", "stop", "danger")
+        self.stop_btn.clicked.connect(self.stopRequested.emit)
+        self.again_btn = again
+        again.hide()
         self.meta = muted("", False)
-        for w in (self.toggle_raw, copy_btn, save_btn, again):
+        for w in (self.stop_btn, self.toggle_raw, copy_btn, save_btn, again):
             bar.addWidget(w)
         bar.addStretch(1)
         bar.addWidget(self.meta)
@@ -125,6 +133,7 @@ class ResultView(QWidget):
         self._waiting = muted("Waiting for output…", False)
         self.inner_lay.addWidget(self._waiting)
         self.inner_lay.addStretch(1)
+        self.toggle_raw.setChecked(bool(args))  # live output while it runs
 
     def append(self, text: str) -> None:
         self.raw += text
@@ -134,6 +143,8 @@ class ResultView(QWidget):
         self._waiting.setText(f"Running… {lines} line{'s' if lines != 1 else ''} so far")
 
     def finish(self, code: int, stderr_tail: list[str]) -> None:
+        self.stop_btn.hide()
+        self.again_btn.show()
         dur = time.time() - self.started
         ok = code == 0
         self.pill.set_state("running" if ok else "failed", "Done" if ok else f"Exit code {code}")
@@ -144,6 +155,16 @@ class ResultView(QWidget):
                 self.diag_title.setText(d.title)
                 self.diag_text.setText(d.detail)
                 self.diag.show()
+        self.files = report_format.find_output_files(self.raw.splitlines(), self.cwd)
+        self._render()
+
+    def show_files(self, files: list[str]) -> None:
+        """File-only view (results of a supervised run that finished)."""
+        self.files = files
+        self.pill.set_state("running", "Results")
+        self.meta.setText(time.strftime("%H:%M:%S"))
+        self.toggle_raw.hide()
+        self.stop_btn.hide()
         self._render()
 
     def _render(self) -> None:
@@ -151,9 +172,16 @@ class ResultView(QWidget):
             item = self.inner_lay.takeAt(0)
             if item.widget():
                 item.widget().deleteLater()
-        self.blocks = report_format.parse(self.raw)
-        if not self.blocks:
+        self.blocks = report_format.parse(self.raw) if self.raw else []
+        if not self.blocks and not self.files:
             self.inner_lay.addWidget(muted("The command finished without printing anything.", False))
+        if self.files:  # result files first: that's usually what the user wants to see
+            for path in self.files:
+                self.inner_lay.addWidget(self._file_card(path))
+            if self.blocks:
+                out_title = QLabel("OUTPUT")
+                out_title.setObjectName("subTitle")
+                self.inner_lay.addWidget(out_title)
         current: Card | None = None
         for b in self.blocks:
             if b.kind == "title":
@@ -170,9 +198,40 @@ class ResultView(QWidget):
                 lab.setStyleSheet(_mono_css())
                 target.addWidget(lab)
         self.inner_lay.addStretch(1)
-        has_structure = any(b.kind in ("table", "kv", "title") for b in self.blocks)
-        if not has_structure and self.blocks:
-            self.toggle_raw.setChecked(True)  # plain text reads better in the console view
+        has_structure = any(b.kind in ("table", "kv", "title") for b in self.blocks) or bool(self.files)
+        # formatted view when there's something to format; plain text reads better as raw output
+        self.toggle_raw.setChecked(not has_structure and bool(self.blocks))
+
+    def _file_card(self, path: str) -> Card:
+        card = Card(Path(path).name, "result file")
+        row = QHBoxLayout()
+        loc = muted(str(Path(path).parent), False)
+        loc.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        open_btn = button("Open file", "edit", "ghost")
+        open_btn.clicked.connect(lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(path)))
+        folder_btn = button("Open folder", "folder", "ghost")
+        folder_btn.clicked.connect(lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(str(Path(path).parent))))
+        row.addWidget(loc, 1)
+        row.addWidget(open_btn)
+        row.addWidget(folder_btn)
+        card.body.addLayout(row)
+        self.blocks_from_files = getattr(self, "blocks_from_files", [])
+        for b in report_format.file_blocks(path):
+            if b.kind == "title":
+                if b.text != Path(path).name:
+                    t = QLabel(b.text.upper())
+                    t.setObjectName("subTitle")
+                    card.body.addWidget(t)
+                continue
+            self.blocks_from_files.append(b)
+            if b.kind in ("table", "kv"):
+                card.body.addWidget(self._table(b))
+            else:
+                lab = QLabel(b.text)
+                lab.setWordWrap(True)
+                lab.setStyleSheet(_mono_css())
+                card.body.addWidget(lab)
+        return card
 
     def _table(self, b: report_format.Block) -> QTableWidget:
         t = QTableWidget(len(b.rows), len(b.headers))
@@ -186,7 +245,7 @@ class ResultView(QWidget):
         for r, row in enumerate(b.rows):
             for c, cell in enumerate(row):
                 item = _SortItem(cell)
-                if report_format._is_numberish(cell):
+                if b.kind == "table" and report_format._is_numberish(cell):
                     item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
                 t.setItem(r, c, item)
         hh = t.horizontalHeader()
@@ -224,7 +283,7 @@ class ResultView(QWidget):
         self.toggle_raw.setText("Show formatted" if raw else "Show raw output")
 
     def _save(self) -> None:
-        tables = [b for b in self.blocks if b.kind in ("table", "kv")]
+        tables = [b for b in [*getattr(self, "blocks_from_files", []), *self.blocks] if b.kind in ("table", "kv")]
         default = (self.args[0].lstrip("-") if self.args else "output") + (".csv" if len(tables) == 1 else ".txt")
         path, _ = QFileDialog.getSaveFileName(self, "Save output", default, "CSV (*.csv);;Text (*.txt)")
         if not path:
@@ -269,7 +328,7 @@ class CommandsPage(QWidget):
         self.left_lay.setSpacing(theme.px(12))
         self.left.setWidget(self.left_inner)
         self.left.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        self.left.setMinimumWidth(theme.px(380))
+        self.left.setMinimumWidth(theme.px(440))
         touch_scroll(self.left)
         split.addWidget(self.left)
 
@@ -312,12 +371,13 @@ class CommandsPage(QWidget):
 
         if cmds.modes:
             card = Card("Run modes", str(len(cmds.modes)))
-            card.body.addWidget(muted("Long-running ways to start the script. The selected one is used by Start on "
-                                      "the Control page (and restarted automatically if it stops).", True))
+            card.body.addWidget(muted("Run once shows the output and any result files here. Keep running makes it "
+                                      "the Start mode on the Control page (restarted if it crashes).", True))
             script = self.get_script()
             current = session.start_mode_for(self.settings, script, spec) if script else ""
             for m in cmds.modes:
-                row = QHBoxLayout()
+                row = QVBoxLayout()
+                row.setSpacing(theme.px(6))
                 txt = QVBoxLayout()
                 txt.setSpacing(1)
                 name = QLabel(m.label + ("   ✓ start mode" if m.flag == current else ""))
@@ -329,10 +389,18 @@ class CommandsPage(QWidget):
                 if m.help:
                     h = muted(m.help, True)
                     txt.addWidget(h)
-                row.addLayout(txt, 1)
-                b = button("Start", "play", "primary")
-                b.clicked.connect(lambda _=False, f=m.flag: self.startModeRequested.emit(f))
-                row.addWidget(b, 0, Qt.AlignVCenter)
+                row.addLayout(txt)
+                btns = QHBoxLayout()
+                once = button("Run once", "play")
+                once.setToolTip(f"Run {m.flag} once here and show its output and result files")
+                once.clicked.connect(lambda _=False, f=m.flag, lab=m.label: self.run([f], lab))
+                keep = button("Keep running", "restart", "primary")
+                keep.setToolTip(f"Make {m.flag} the start mode and run it supervised from the Control page")
+                keep.clicked.connect(lambda _=False, f=m.flag: self.startModeRequested.emit(f))
+                btns.addWidget(once)
+                btns.addWidget(keep)
+                btns.addStretch(1)
+                row.addLayout(btns)
                 card.body.addLayout(row)
             self.left_lay.addWidget(card)
 
@@ -413,7 +481,7 @@ class CommandsPage(QWidget):
         script = self.get_script()
         if script is None:
             return
-        view = ResultView(title or " ".join(args), args)
+        view = ResultView(title or " ".join(args), args, cwd=str(session.working_dir(script)))
         view.rerun.connect(lambda a: self.run(a, title))
         self.tabs.show()
         self.empty_results.hide()
@@ -454,8 +522,17 @@ class CommandsPage(QWidget):
         proc.finished.connect(lambda code, _s: (read_out(), read_err(), view.finish(code, stderr_tail),
                                                 self.procs.remove(proc) if proc in self.procs else None))
         proc.errorOccurred.connect(lambda e: view.append(f"Could not run: {e}\n"))
+        view.stopRequested.connect(proc.kill)
         self.procs.append(proc)
         proc.start(spec.argv[0], spec.argv[1:])
+
+    def show_files(self, files: list[str], title: str = "Results") -> None:
+        view = ResultView(title, [])
+        self.tabs.show()
+        self.empty_results.hide()
+        idx = self.tabs.addTab(view, title[:28])
+        self.tabs.setCurrentIndex(idx)
+        view.show_files(files)
 
     def stop_all(self) -> None:
         for p in list(self.procs):

@@ -33,6 +33,7 @@ Drop a Python script into `scripts/`. The app reads its variables and builds a s
   - **Linux:** the `.deb` pulls in `hackrf` and `libhackrf0`. An *Install HackRF drivers* button in the app runs the same setup (apt/dnf/pacman/zypper, udev rules, `plugdev` group).
   - **Windows:** the HackRF DLL and tools are bundled, along with Zadig for the WinUSB driver.
 - **Live console** with colouring, search, timestamps and export. Output also goes to rotating log files.
+- **Result files:** when a script says it wrote a `.json` or `.csv` file (for example `Results written to: frequencies.json`), the app can show the file as tables, with buttons to open it or its folder.
 - **Dark and light themes.** Your script's changes are picked up when the file changes on disk.
 
 | Commands & reports | Options grouped automatically |
@@ -165,6 +166,7 @@ Errors a restart can't fix, such as a syntax error or a missing package, stop th
 | Start the script automatically | Settings → *Start script when the app opens* |
 | Run without any desktop app | Settings → *Background service → Install* |
 | Restart a hung script | Settings → *Hang detection* (seconds without output) |
+| A one-off task (e.g. a single `--scan`) | Use **Run once** on the Commands page. A script that ends normally is shown as *Finished* and isn't restarted; it's only restarted when it crashes. |
 
 Command line:
 

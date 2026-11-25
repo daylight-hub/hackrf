@@ -594,14 +594,15 @@ class SettingsPage(QWidget):
         sup = Card("Supervision · keep the script running")
         sv = self.s.supervisor
         self.policy = QComboBox()
-        for key, label in ((config.RESTART_ALWAYS, "Always restart"),
-                           (config.RESTART_ON_FAILURE, "Restart only if it fails"),
+        for key, label in ((config.RESTART_ON_FAILURE, "Restart if it crashes (recommended)"),
+                           (config.RESTART_ALWAYS, "Always restart, even after it finishes"),
                            (config.RESTART_NEVER, "Never restart")):
             self.policy.addItem(label, key)
         self.policy.setCurrentIndex(max(0, self.policy.findData(sv.restart_policy)))
         self.policy.setFixedWidth(theme.px(220))
         sup.body.addWidget(form_row("Restart policy", self.policy,
-                                    "“Always” also restarts a script that finishes normally."))
+                                    "A script that ends normally (exit code 0) is finished; it is restarted "
+                                    "when it crashes or is killed."))
         self.backoff = self._dspin(0.1, 600, sv.backoff_initial_s, " s")
         sup.body.addWidget(form_row("First retry delay", self.backoff, "Doubles after each quick failure"))
         self.backoff_max = self._dspin(1, 3600, sv.backoff_max_s, " s")

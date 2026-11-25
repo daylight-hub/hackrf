@@ -79,7 +79,7 @@ def test_commands_page_lists_flags(qapp, tmp_path, monkeypatch):
 
     script = Path(__file__).resolve().parents[1] / "examples" / "frequency_scanner.py"
     win = MainWindow(config.Settings(), str(script))
-    assert win.mode_box.isVisibleTo(win) and win.mode_combo.currentData() == "--scan"
+    assert win.mode_box.isVisibleTo(win) and win.mode_combo.currentData() == ""
     labels = [w.text() for w in win.commands_page.left_inner.findChildren(QtWidgets.QLabel)]
     assert "History" in labels and "Block freq" in labels
     win.close()

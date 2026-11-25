@@ -119,13 +119,9 @@ def start_mode_for(settings: Settings, script: Path, spec: script_model.ScriptSp
     """Flag passed when the supervised script starts (e.g. "--scan")."""
     key = settings.key(script)
     modes = spec.commands.modes if spec.commands else []
-    if key in settings.start_mode:
-        chosen = settings.start_mode[key]
-        return chosen if chosen in [m.flag for m in modes] or chosen == "" else ""
-    # A multi-command script (reports + a run mode) usually needs its mode flag to do anything
-    if modes and spec.commands.reports:
-        return modes[0].flag
-    return ""
+    chosen = settings.start_mode.get(key, "")
+    # only flags the user picked; a guessed flag can be a one-off task (e.g. a single scan)
+    return chosen if chosen in [m.flag for m in modes] else ""
 
 
 def prepare_launch(settings: Settings, script: str | Path, args: list[str] | None = None) -> LaunchSpec:

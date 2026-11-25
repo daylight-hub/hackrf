@@ -14,11 +14,12 @@ from . import paths
 RESTART_ALWAYS = "always"
 RESTART_ON_FAILURE = "on-failure"
 RESTART_NEVER = "never"
+SETTINGS_VERSION = 2
 
 
 @dataclass
 class SupervisorSettings:
-    restart_policy: str = RESTART_ALWAYS
+    restart_policy: str = RESTART_ON_FAILURE  # a script that finishes cleanly stays finished
     max_restarts: int = 0            # within restart_window_s; 0 = unlimited
     restart_window_s: int = 600
     backoff_initial_s: float = 1.0
@@ -67,6 +68,7 @@ class Settings:
     python: PythonSettings = field(default_factory=PythonSettings)
     transfer: dict[str, Any] = field(default_factory=dict)
     window_geometry: str = ""
+    settings_version: int = SETTINGS_VERSION
 
     # ---------------------------------------------------------------- per script
     @staticmethod
@@ -105,6 +107,19 @@ def _build(cls: type, data: dict[str, Any]) -> Any:
     return cls(**kwargs)
 
 
+def _migrate(s: Settings, data: dict[str, Any]) -> Settings:
+    version = int(data.get("settings_version", 1) or 1)
+    if version < 2:
+        # 1.0.x defaulted to "always restart", which loops scripts that finish on purpose
+        # (e.g. a one-off scan). The default is now "restart only if it crashes".
+        if s.supervisor.restart_policy == RESTART_ALWAYS:
+            s.supervisor.restart_policy = RESTART_ON_FAILURE
+        # start modes were guessed automatically; only keep ones the user picked
+        s.start_mode = {k: v for k, v in s.start_mode.items() if v}
+    s.settings_version = SETTINGS_VERSION
+    return s
+
+
 def settings_path() -> Path:
     return paths.config_dir() / "settings.json"
 
@@ -113,7 +128,8 @@ def load(path: Path | None = None) -> Settings:
     path = path or settings_path()
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
-        return _build(Settings, data)
+        settings = _build(Settings, data)
+        return _migrate(settings, data)
     except FileNotFoundError:
         return Settings()
     except (OSError, ValueError, TypeError):

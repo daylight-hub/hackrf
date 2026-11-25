@@ -56,9 +56,7 @@ def test_start_mode_default_and_launch_args(tmp_path):
     script = ROOT / "examples" / "frequency_scanner.py"
     s = config.Settings()
     spec = script_model.parse_script(script)
-    assert session.start_mode_for(s, script, spec) == "--scan"
-    s.start_mode[s.key(script)] = ""
-    assert session.start_mode_for(s, script, spec) == ""
+    assert session.start_mode_for(s, script, spec) == ""  # never guessed
     launch = session.prepare_launch(s, script, args=["--top", "3"])
     assert launch.argv[-3:] == ["--", "--top", "3"]
 
@@ -124,3 +122,58 @@ def test_layout_respects_headers_and_flags_tx(tmp_path):
     ''')
     assert spec.sections == ["Radio settings", "Output"]
     assert spec.by_name()["TX_ENABLED"].danger and not spec.by_name()["DRY_RUN_TX"].danger
+
+
+def test_settings_migration_and_defaults(tmp_path):
+    import json
+
+    p = tmp_path / "settings.json"
+    p.write_text(json.dumps({"supervisor": {"restart_policy": "always"}, "start_mode": {"a": "--scan", "b": ""}}))
+    s = config.load(p)
+    assert s.supervisor.restart_policy == config.RESTART_ON_FAILURE
+    assert s.start_mode == {"a": "--scan"} and s.settings_version == config.SETTINGS_VERSION
+    p.write_text(json.dumps({"settings_version": 2, "supervisor": {"restart_policy": "always"}}))
+    assert config.load(p).supervisor.restart_policy == "always"  # a deliberate choice is kept
+    assert config.Settings().supervisor.restart_policy == config.RESTART_ON_FAILURE
+
+
+def test_start_mode_only_when_chosen():
+    script = ROOT / "examples" / "frequency_scanner.py"
+    s = config.Settings()
+    spec = script_model.parse_script(script)
+    assert session.start_mode_for(s, script, spec) == ""
+    s.start_mode[s.key(script)] = "--scan"
+    assert session.start_mode_for(s, script, spec) == "--scan"
+
+
+def test_finished_script_is_not_restarted(tmp_path):
+    import time as _t
+
+    from rfstudio.supervisor import State, Supervisor
+
+    script = tmp_path / "once.py"
+    script.write_text("print('Results written to: out.json')\n")
+    events = []
+    sup = Supervisor(lambda: session.prepare_launch(config.Settings(), script), config.Settings().supervisor,
+                     on_event=lambda lvl, m: events.append(lvl))
+    sup.start()
+    deadline = _t.time() + 30
+    while sup.is_active and _t.time() < deadline:
+        _t.sleep(0.05)
+    assert sup.state == State.STOPPED and sup.restart_count == 0 and "success" in events
+
+
+def test_result_files_rendered(tmp_path):
+    import json
+
+    folder = tmp_path / "RF Script Studio" / "app"
+    folder.mkdir(parents=True)
+    (folder / "frequencies.json").write_text(json.dumps(
+        {"count": 2, "frequencies": [{"freq_hz": 433920000.0, "power_db": -42.1}, {"freq_hz": 315e6, "power_db": -55}]}))
+    lines = [f"    Results written to: {folder / 'frequencies.json'}"]
+    files = report_format.find_output_files(lines, None)
+    assert files == [str(folder / "frequencies.json")]
+    blocks = report_format.file_blocks(files[0])
+    table = next(b for b in blocks if b.kind == "table")
+    assert table.headers == ["freq_hz", "power_db"] and table.rows[0] == ["433920000", "-42.1"]
+    assert report_format.find_output_files(["saved frequencies.json"], str(folder)) == files
