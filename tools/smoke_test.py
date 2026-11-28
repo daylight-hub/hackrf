@@ -68,6 +68,30 @@ def main() -> int:
         if "FLAG False" not in res.stdout:
             failures.append("bundled runner could not execute a script (numpy/scipy/pyhackrf2)")
 
+    # Child processes, as a continuous transmitter would use them: a multiprocessing worker
+    # (spawn = how Windows always works) that loads pyhackrf2 and must see the app's option
+    # values, plus a helper started with subprocess - both must print into our output.
+    with tempfile.TemporaryDirectory() as tmp:
+        origin = Path(tmp) / "mp_app.py"
+        body = ("import multiprocessing as mp, os, subprocess, sys\n"
+                "FLAG = {flag}\n"
+                "def worker(q):\n"
+                "    import pyhackrf2\n"
+                "    print('worker FLAG', FLAG, os.path.basename(__file__), flush=True)\n"
+                "    q.put(FLAG)\n"
+                "if __name__ == '__main__':\n"
+                "    ctx = mp.get_context('spawn')\n"
+                "    q = ctx.Queue(); p = ctx.Process(target=worker, args=(q,)); p.start()\n"
+                "    print('from worker', q.get(timeout=90), flush=True); p.join(60)\n"
+                "    subprocess.run([sys.executable, '-c', 'print(\"helper child ok\")'])\n")
+        origin.write_text(body.format(flag="False"), encoding="utf-8")
+        patched = Path(tmp) / "patched.py"
+        patched.write_text(body.format(flag="True"), encoding="utf-8")
+        res = run([str(exe), "--run-script", "--script", str(patched), "--origin", str(origin)], cwd=tmp)
+        for expect in ("worker FLAG True mp_app.py", "from worker True", "helper child ok"):
+            if expect not in res.stdout:
+                failures.append(f"child processes: missing '{expect}' in output")
+
     res = run([str(exe), "-m", "pip", "install", "numpy", "scipy"])
     if res.returncode != 0 or "already satisfied: scipy" not in res.stdout:
         failures.append("pip emulation does not report bundled numpy/scipy")

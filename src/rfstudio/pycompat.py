@@ -119,6 +119,9 @@ def run(argv: list[str]) -> int:
 
     from . import runner
 
+    if any(a.startswith("--multiprocessing-fork") for a in args):
+        runner.prepare_multiprocessing_child()  # a multiprocessing worker of the user's script
+
     if args[0] == "-m" and len(args) > 1:
         module, rest = args[1], args[2:]
         if module == "pip":

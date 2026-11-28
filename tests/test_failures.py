@@ -305,3 +305,70 @@ def test_windows_style_exec_waits_for_restarted_copy(tmp_path):
     out = subprocess.run(spec.argv, cwd=spec.cwd, env=env, capture_output=True, text=True, timeout=60)
     assert out.stdout.split() == ["run", "0", "run", "1"], out.stderr
     assert out.returncode == 3
+
+
+# ---------------------------------------------- Windows child-process parity
+
+def test_child_output_capture_and_stdin_isolation(tmp_path):
+    """Programs started by the script share its output; their stdin is empty (not the Stop pipe)."""
+    script = tmp_path / "kids.py"
+    script.write_text(
+        "import subprocess, sys, time\n"
+        "subprocess.run([sys.executable, '-c', 'import sys; print(\"child-out\"); print(\"child-err\", "
+        "file=sys.stderr); print(\"stdin:\", repr(sys.stdin.read()))'])\n"
+        "print('parent done', flush=True)\n"
+        "try:\n    time.sleep(60)\nfinally:\n    print('cleanup', flush=True)\n")
+    spec = session.prepare_launch(config.Settings(), script)
+    env = dict(spec.env, RFSTUDIO_STOP_PIPE="1", RFSTUDIO_CHILD_CAPTURE="1")
+    proc = subprocess.Popen(spec.argv, cwd=spec.cwd, env=env, stdin=subprocess.PIPE,
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    lines = [proc.stdout.readline().strip() for _ in range(3)]
+    assert lines == [b"child-out", b"stdin: ''", b"parent done"]
+    proc.stdin.write(runner.STOP_TOKEN + b"\n")
+    proc.stdin.close()
+    proc.wait(timeout=20)
+    out, err = proc.stdout.read(), proc.stderr.read()
+    assert b"cleanup" in out and b"child-err" in err
+
+
+MP_SCRIPT = (
+    "import multiprocessing as mp, os, sys\n"
+    "FLAG = False\n"
+    "def worker(q):\n"
+    "    print('worker FLAG', FLAG, os.path.basename(__file__), flush=True)\n"
+    "    q.put(FLAG)\n"
+    "if __name__ == '__main__':\n"
+    "    ctx = mp.get_context('spawn')\n"
+    "    exe = os.environ.get('MP_EXE')\n"
+    "    if exe:\n"
+    "        ctx.set_executable(exe)\n"
+    "    q = ctx.Queue(); p = ctx.Process(target=worker, args=(q,)); p.start()\n"
+    "    print('from worker', q.get(timeout=60), flush=True); p.join(60)\n"
+)
+
+
+def test_multiprocessing_worker_gets_options_and_output(tmp_path):
+    """Worker started through the app's executable (like the packaged app on Windows) runs the
+    script with the app's option values, keeps __file__, and prints into the same console."""
+    script = tmp_path / "mp_app.py"
+    script.write_text(MP_SCRIPT)
+    s = config.Settings()
+    s.overrides_for(script)["FLAG"] = "True"
+    wrapper = tmp_path / "pyexe"
+    wrapper.write_text(f"#!/bin/sh\nexec {sys.executable} -m rfstudio \"$@\"\n")
+    wrapper.chmod(0o755)
+    spec = session.prepare_launch(s, script)
+    env = dict(spec.env, MP_EXE=str(wrapper), RFSTUDIO_MP_SUPPORT="1", RFSTUDIO_CHILD_CAPTURE="1")
+    out = subprocess.run(spec.argv, cwd=spec.cwd, env=env, capture_output=True, text=True, timeout=120)
+    assert out.returncode == 0, out.stderr
+    assert "worker FLAG True mp_app.py" in out.stdout and "from worker True" in out.stdout
+
+
+def test_preparation_data_includes_main_script(monkeypatch):
+    import multiprocessing.spawn as spawn
+
+    monkeypatch.setattr(spawn, "_rfstudio_patched", False, raising=False)
+    monkeypatch.setattr(spawn, "get_preparation_data", lambda name: {"name": name})  # as in a packaged Windows app
+    runner.install_multiprocessing_support(force=True)
+    data = spawn.get_preparation_data("w")
+    assert data["init_main_from_path"] == os.path.abspath(sys.modules["__main__"].__file__)

@@ -149,6 +149,11 @@ Errors a restart can't fix, such as a syntax error or a missing package, stop th
 - `[sys.executable, "-m", "pip", "install", "numpy", "scipy"]` answers "already satisfied" for bundled packages. Anything not included gets a clear error, because nothing can be installed into a packaged app.
 - A script that restarts itself with `os.execv(sys.executable, …)` comes back with the app's option values.
 
+**Child processes (Windows parity):** scripts that start helper programs (`subprocess`, `hackrf_transfer`, other scripts) or worker processes (`multiprocessing`) work the same on Windows as on Linux:
+- their output appears in the console;
+- workers get the app's option values and can use pyhackrf2;
+- Stop reaches them.
+
 **Stopping cleanly:** Stop sends Ctrl+C on Linux and an equivalent stop request on Windows. Your script gets a `KeyboardInterrupt`, so its `finally:` / `except KeyboardInterrupt:` code runs (for example, switching the transmitter off) before it's force-closed.
 
 **pyhackrf2 fixes:** the app patches two bugs in pyhackrf2 1.0.x when your script imports it, without changing the installed package:

@@ -333,8 +333,12 @@ class Supervisor:
 
                     stalled = False
                     stop_seen = False
+                    quiet_noted = False
                     while proc.poll() is None:
                         self._wake.wait(0.25)
+                        if not quiet_noted and not self._tail and time.monotonic() - self.started_at > 30:
+                            quiet_noted = True
+                            self._event("info", f"Still running (PID {proc.pid}) but nothing printed yet after 30 s")
                         if not self._want_running or self._restart_requested:
                             stop_seen = not self._want_running
                             break

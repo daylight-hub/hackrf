@@ -289,6 +289,134 @@ def install_exec_compat(force: bool = False) -> None:
     os.execve = lambda path, args, env: _exec(path, args, env)  # type: ignore[assignment]
 
 
+# --------------------------------------------- child processes (Windows parity)
+
+def _same_file(a: str, b: str) -> bool:
+    return os.path.normcase(os.path.abspath(a)) == os.path.normcase(os.path.abspath(b))
+
+
+def install_child_output_capture(force: bool = False) -> None:
+    """Windows: programs the script starts (hackrf_transfer, helper scripts...) would
+    write to an invisible console instead of the app. Give them our stdout/stderr
+    (like Linux does) and an empty stdin so they can't swallow the Stop request."""
+    if not (force or sys.platform.startswith("win")):
+        return
+    import subprocess
+
+    if getattr(subprocess.Popen, "_rfstudio_capture", False):
+        return
+    original_init = subprocess.Popen.__init__
+
+    def __init__(self, args, *pos, **kw):  # type: ignore[no-untyped-def]
+        if not pos:  # (positional bufsize/executable/stdin... is rare; leave those alone)
+            if kw.get("stdout") is None and _fd_ok(1):
+                kw["stdout"] = 1
+            if kw.get("stderr") is None and _fd_ok(2):
+                kw["stderr"] = 2
+            if kw.get("stdin") is None:
+                kw["stdin"] = subprocess.DEVNULL
+        original_init(self, args, *pos, **kw)
+
+    subprocess.Popen.__init__ = __init__  # type: ignore[method-assign]
+    subprocess.Popen._rfstudio_capture = True  # type: ignore[attr-defined]
+
+
+def _fd_ok(fd: int) -> bool:
+    try:
+        os.fstat(fd)
+        return True
+    except OSError:
+        return False
+
+
+def install_multiprocessing_support(force: bool = False) -> None:
+    """Parent side, for `multiprocessing` with the spawn start method (always used on Windows).
+
+    * A packaged Windows app normally doesn't tell workers where the main script is,
+      so functions defined in the script can't be found in the worker -> add it.
+    * Workers would get no stdout/stderr on Windows -> share ours, like Linux.
+    """
+    if not (force or sys.platform.startswith("win")):
+        return
+    import multiprocessing.spawn as spawn
+
+    if getattr(spawn, "_rfstudio_patched", False):
+        return
+    original = spawn.get_preparation_data
+
+    def get_preparation_data(name):  # type: ignore[no-untyped-def]
+        data = original(name)
+        if "init_main_from_path" not in data and "init_main_from_name" not in data:
+            main = sys.modules.get("__main__")
+            path = getattr(main, "__file__", None)
+            if path:
+                data["init_main_from_path"] = os.path.abspath(path)
+        return data
+
+    spawn.get_preparation_data = get_preparation_data
+    spawn._rfstudio_patched = True
+
+    if not sys.platform.startswith("win"):
+        return
+    try:
+        import msvcrt
+        import multiprocessing.popen_spawn_win32 as psw
+        import subprocess
+    except ImportError:
+        return
+    real = psw._winapi
+
+    class _WinApi:
+        def __getattr__(self, name):  # type: ignore[no-untyped-def]
+            return getattr(real, name)
+
+        def CreateProcess(self, app, cmd, pattr, tattr, inherit, flags, env, cwd, startup):  # noqa: N802
+            try:
+                si = subprocess.STARTUPINFO()
+                si.dwFlags |= subprocess.STARTF_USESTDHANDLES
+                devnull = os.open(os.devnull, os.O_RDONLY)
+                handles = [msvcrt.get_osfhandle(devnull), msvcrt.get_osfhandle(1), msvcrt.get_osfhandle(2)]
+                for h in handles:
+                    os.set_handle_inheritable(h, True)
+                si.hStdInput, si.hStdOutput, si.hStdError = handles
+                return real.CreateProcess(app, cmd, pattr, tattr, True, flags, env, cwd, si)
+            except OSError:
+                return real.CreateProcess(app, cmd, pattr, tattr, inherit, flags, env, cwd, startup)
+
+    psw._winapi = _WinApi()
+
+
+def _fixup_main_from_path(main_path: str) -> None:
+    """Worker side: load the script as __mp_main__ - with the app's option values
+    (the patched copy) while keeping __file__ pointing at the real script."""
+    origin = os.environ.get("RFSTUDIO_SCRIPT", "")
+    patched = os.environ.get("RFSTUDIO_PATCHED_SCRIPT", "")
+    source = patched if patched and origin and os.path.isfile(patched) and _same_file(main_path, origin) \
+        else main_path
+    with open(source, "rb") as fh:
+        code = compile(fh.read(), main_path, "exec", dont_inherit=True)
+    module = types.ModuleType("__mp_main__")
+    module.__file__ = main_path
+    module.__builtins__ = __builtins__  # type: ignore[attr-defined]
+    sys.modules["__main__"] = sys.modules["__mp_main__"] = module
+    folder = os.path.dirname(os.path.abspath(main_path))
+    if folder not in sys.path:
+        sys.path.insert(0, folder)
+    exec(code, module.__dict__)
+
+
+def prepare_multiprocessing_child() -> None:
+    """Called first thing in a worker process started by the packaged app."""
+    _line_buffer_stdio()
+    install_hackrf_compat()
+    install_pyhackrf2_fixes()
+    install_child_output_capture()
+    install_exec_compat()
+    import multiprocessing.spawn as spawn
+
+    spawn._fixup_main_from_path = _fixup_main_from_path  # type: ignore[attr-defined]
+
+
 def _line_buffer_stdio() -> None:
     for stream in (sys.stdout, sys.stderr):
         try:
@@ -309,7 +437,13 @@ def main(args: list[str] | None = None) -> None:
     if os.environ.get("RFSTUDIO_STOP_PIPE") == "1":
         _start_stop_listener()
     install_exec_compat(force=os.environ.get("RFSTUDIO_EXEC_COMPAT") == "1")
+    install_child_output_capture(force=os.environ.get("RFSTUDIO_CHILD_CAPTURE") == "1")
+    install_multiprocessing_support(force=os.environ.get("RFSTUDIO_MP_SUPPORT") == "1")
     origin = ns.origin or ns.script
+    # children (multiprocessing workers, helper scripts) find the real script + the app's values
+    os.environ["RFSTUDIO_SCRIPT"] = os.path.abspath(origin)
+    if not _same_file(ns.script, origin):
+        os.environ["RFSTUDIO_PATCHED_SCRIPT"] = os.path.abspath(ns.script)
     try:
         run_script(ns.script, origin, extra, ns.hackrf_dir)
     except SystemExit:
