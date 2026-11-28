@@ -2,7 +2,7 @@
 
 __all__ = ["__version__", "APP_NAME", "APP_ID", "ORG_NAME"]
 
-__version__ = "1.0.7"
+__version__ = "1.0.8"
 APP_NAME = "RF Script Studio"
 APP_ID = "rfscriptstudio"
 ORG_NAME = "RFScriptStudio"

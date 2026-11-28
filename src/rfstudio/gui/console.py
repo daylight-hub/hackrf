@@ -41,6 +41,7 @@ class ConsoleView(QWidget):
 
         bar = QHBoxLayout()
         bar.setSpacing(4)
+        self._bar = bar
         title = QLabel("CONSOLE")
         title.setObjectName("cardTitle")
         bar.addWidget(title)
@@ -95,6 +96,18 @@ class ConsoleView(QWidget):
         self._timer.timeout.connect(self._flush)
         self._timer.start()
         self.refresh_theme()
+
+    def add_tool(self, icon_name: str, tip: str, callback) -> QToolButton:  # type: ignore[no-untyped-def]
+        """Extra button at the start of the console toolbar."""
+        p = theme.current()
+        b = QToolButton()
+        b.setIcon(icons.icon(icon_name, p.text))
+        b.setIconSize(QSize(theme.px(16), theme.px(16)))
+        b.setToolTip(tip)
+        b.setCursor(Qt.PointingHandCursor)
+        b.clicked.connect(callback)
+        self._bar.insertWidget(self._bar.indexOf(self.find) + 1, b)
+        return b
 
     def refresh_theme(self) -> None:
         p = theme.current()

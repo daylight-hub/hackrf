@@ -14,6 +14,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 
@@ -91,6 +92,49 @@ def main() -> int:
         for expect in ("worker FLAG True mp_app.py", "from worker True", "helper child ok"):
             if expect not in res.stdout:
                 failures.append(f"child processes: missing '{expect}' in output")
+
+    # The real start-up path of the desktop app: the supervisor (on Windows: hidden console,
+    # Stop/Dump events, job object). Output must arrive, "where is it" must work, Stop must
+    # let the script clean up.
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+    from rfstudio.config import SupervisorSettings
+    from rfstudio.supervisor import LaunchSpec, Supervisor
+
+    with tempfile.TemporaryDirectory() as tmp:
+        script = Path(tmp) / "tx_app.py"
+        script.write_text(
+            "import time\nimport numpy, scipy.signal\nfrom pyhackrf2 import HackRF\n"
+            "print('devices', HackRF.enumerate(), flush=True)\n"
+            "print('═══ SDR ✓ é ═══')\n"
+            "def wait_for_radio():\n    time.sleep(120)\n"
+            "try:\n    wait_for_radio()\nfinally:\n    print('TX OFF - cleanup ran', flush=True)\n",
+            encoding="utf-8")
+        got: list[str] = []
+        sup = Supervisor(lambda: LaunchSpec([str(exe), "--run-script", "--script", str(script),
+                                             "--origin", str(script)], cwd=tmp),
+                         SupervisorSettings(stop_timeout_s=15), on_output=lambda line, st: got.append(line))
+
+        def wait_for(pred, secs):
+            end = time.time() + secs
+            while time.time() < end:
+                if pred():
+                    return True
+                time.sleep(0.1)
+            return False
+
+        print("$ supervised run of", script.name, flush=True)
+        sup.start()
+        if not wait_for(lambda: any(g.startswith("devices") for g in got), 90):
+            failures.append(f"supervised run: no output from the script (got {got[:5]})")
+        if not wait_for(lambda: "═══ SDR ✓ é ═══" in got, 10):
+            failures.append(f"supervised run: text encoding wrong (got {got[-3:]})")
+        sup.dump_stacks()
+        if not wait_for(lambda: any("wait_for_radio" in g for g in got), 20):
+            failures.append("supervised run: 'show what it is doing' produced no stack")
+        sup.stop(wait=True)
+        if "TX OFF - cleanup ran" not in got:
+            failures.append("supervised run: Stop did not let the script run its cleanup")
+        print("\n".join("   | " + g for g in got[:12]), flush=True)
 
     res = run([str(exe), "-m", "pip", "install", "numpy", "scipy"])
     if res.returncode != 0 or "already satisfied: scipy" not in res.stdout:

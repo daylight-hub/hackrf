@@ -220,13 +220,108 @@ def run_script(script: str, origin: str, argv: list[str], hackrf_dir: str | None
 STOP_TOKEN = b"__rfstudio_stop__"
 
 
+def _interrupt_main() -> None:
+    """Raise KeyboardInterrupt in the script's main thread, waking it from time.sleep()."""
+    import signal
+    import threading
+
+    try:
+        if hasattr(signal, "pthread_kill"):  # POSIX: deliver to the main thread
+            signal.pthread_kill(threading.main_thread().ident, signal.SIGINT)
+        else:  # Windows: runs CPython's handler, which also wakes time.sleep()
+            signal.raise_signal(signal.SIGINT)
+    except (AttributeError, OSError, ValueError):
+        import _thread
+        _thread.interrupt_main()
+
+
+def _dump_stacks() -> None:
+    import faulthandler
+
+    try:
+        sys.stdout.flush()
+        print("[rfstudio] where the script is right now (most recent call first):", file=sys.stderr, flush=True)
+        faulthandler.dump_traceback(file=sys.stderr, all_threads=True)
+        sys.stderr.flush()
+    except (OSError, ValueError, AttributeError, RuntimeError):
+        pass
+
+
+def _start_event_listener() -> None:
+    """Windows: wait on the app's named Stop / Dump events and on the app process itself.
+
+    Stop (or the app disappearing) -> KeyboardInterrupt in the script, like Ctrl+C on Linux.
+    Dump -> print where every thread is (for troubleshooting a script that prints nothing)."""
+    stop_name = os.environ.get("RFSTUDIO_STOP_EVENT")
+    if not stop_name or not sys.platform.startswith("win"):
+        return
+    import ctypes
+    import threading
+    from ctypes import wintypes
+
+    k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    k32.OpenEventW.restype = wintypes.HANDLE
+    k32.OpenEventW.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.LPCWSTR]
+    k32.OpenProcess.restype = wintypes.HANDLE
+    k32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    k32.WaitForMultipleObjects.restype = wintypes.DWORD
+    k32.WaitForMultipleObjects.argtypes = [wintypes.DWORD, ctypes.POINTER(wintypes.HANDLE), wintypes.BOOL,
+                                           wintypes.DWORD]
+    synchronize = 0x00100000
+    handles: list[int] = []
+    kinds: list[str] = []
+    for kind, name in (("stop", stop_name), ("dump", os.environ.get("RFSTUDIO_DUMP_EVENT"))):
+        if name:
+            h = k32.OpenEventW(synchronize, False, name)
+            if h:
+                handles.append(h)
+                kinds.append(kind)
+    try:
+        ppid = int(os.environ.get("RFSTUDIO_PARENT_PID", "0"))
+    except ValueError:
+        ppid = 0
+    if ppid:
+        h = k32.OpenProcess(synchronize, False, ppid)
+        if h:
+            handles.append(h)
+            kinds.append("parent")
+    if not handles:
+        return
+    array = (wintypes.HANDLE * len(handles))(*handles)
+
+    def watch() -> None:
+        while True:
+            r = k32.WaitForMultipleObjects(len(handles), array, False, 0xFFFFFFFF)
+            if r >= len(handles):  # WAIT_FAILED etc.
+                return
+            if kinds[r] == "dump":
+                _dump_stacks()
+                continue
+            _interrupt_main()  # stop requested, or the app went away
+            return
+
+    threading.Thread(target=watch, name="rfstudio-stop", daemon=True).start()
+
+
+def _register_posix_dump() -> None:
+    """SIGUSR1 -> print every thread's stack. Done in C by faulthandler, so it works even
+    while the script is stuck inside a C call (e.g. waiting on the radio)."""
+    try:
+        import faulthandler
+        import signal
+
+        if hasattr(signal, "SIGUSR1") and sys.stderr is not None:
+            faulthandler.register(signal.SIGUSR1, file=sys.stderr, all_threads=True, chain=False)
+    except (ImportError, ValueError, OSError, RuntimeError, AttributeError):
+        pass
+
+
 def _start_stop_listener() -> None:
     """Windows has no SIGINT for windowless processes: the supervisor writes a stop
     token to our stdin instead (EOF = the app went away). Either one raises
     KeyboardInterrupt in the script, exactly like pressing Ctrl+C, so its
     cleanup (closing the radio, switching TX off) runs."""
     import io
-    import signal
     import threading
 
     stream = sys.stdin.buffer if sys.stdin is not None else None
@@ -241,14 +336,7 @@ def _start_stop_listener() -> None:
                     break
         except (OSError, ValueError):
             pass
-        try:
-            if hasattr(signal, "pthread_kill"):  # POSIX: deliver to the main thread (interrupts sleep)
-                signal.pthread_kill(threading.main_thread().ident, signal.SIGINT)
-            else:  # Windows: runs CPython's handler, which also wakes time.sleep()
-                signal.raise_signal(signal.SIGINT)
-        except (AttributeError, OSError, ValueError):
-            import _thread
-            _thread.interrupt_main()
+        _interrupt_main()
 
     threading.Thread(target=watch, name="rfstudio-stop", daemon=True).start()
 
@@ -267,17 +355,19 @@ def install_exec_compat(force: bool = False) -> None:
                 stream.flush()
             except (AttributeError, OSError, ValueError):
                 pass
+        pipe_mode = os.environ.get("RFSTUDIO_STOP_PIPE") == "1"
         child = subprocess.Popen([os.fspath(path), *[os.fspath(a) for a in list(args)[1:]]],
-                                 env=env, stdin=subprocess.PIPE)
+                                 env=env, stdin=subprocess.PIPE if pipe_mode else subprocess.DEVNULL)
         try:
             code = child.wait()
-        except KeyboardInterrupt:  # Stop pressed: pass it on so the new copy cleans up too
-            try:
-                child.stdin.write(STOP_TOKEN + b"\n")
-                child.stdin.flush()
-                child.stdin.close()
-            except (OSError, ValueError):
-                pass
+        except KeyboardInterrupt:  # Stop pressed: the new copy got the same Stop event / token
+            if pipe_mode and child.stdin is not None:
+                try:
+                    child.stdin.write(STOP_TOKEN + b"\n")
+                    child.stdin.flush()
+                    child.stdin.close()
+                except (OSError, ValueError):
+                    pass
             try:
                 code = child.wait(10)
             except subprocess.TimeoutExpired:
@@ -420,7 +510,8 @@ def prepare_multiprocessing_child() -> None:
 def _line_buffer_stdio() -> None:
     for stream in (sys.stdout, sys.stderr):
         try:
-            stream.reconfigure(line_buffering=True, errors="replace")  # type: ignore[union-attr]
+            # UTF-8 like the app expects (a frozen Windows app may default to the ANSI code page)
+            stream.reconfigure(encoding="utf-8", line_buffering=True, errors="replace")  # type: ignore[union-attr]
         except (AttributeError, ValueError):
             pass
 
@@ -436,6 +527,8 @@ def main(args: list[str] | None = None) -> None:
     _line_buffer_stdio()
     if os.environ.get("RFSTUDIO_STOP_PIPE") == "1":
         _start_stop_listener()
+    _start_event_listener()
+    _register_posix_dump()
     install_exec_compat(force=os.environ.get("RFSTUDIO_EXEC_COMPAT") == "1")
     install_child_output_capture(force=os.environ.get("RFSTUDIO_CHILD_CAPTURE") == "1")
     install_multiprocessing_support(force=os.environ.get("RFSTUDIO_MP_SUPPORT") == "1")
@@ -444,6 +537,12 @@ def main(args: list[str] | None = None) -> None:
     os.environ["RFSTUDIO_SCRIPT"] = os.path.abspath(origin)
     if not _same_file(ns.script, origin):
         os.environ["RFSTUDIO_PATCHED_SCRIPT"] = os.path.abspath(ns.script)
+    if os.environ.get("RFSTUDIO_SUPERVISED") == "1" and str(os.getppid()) == os.environ.get("RFSTUDIO_PARENT_PID"):
+        # proves the output path works even if the script itself stays quiet
+        import platform
+
+        print(f"[rfstudio] Python {platform.python_version()} on {platform.system()} "
+              f"{platform.release()} is running {os.path.basename(origin)}", flush=True)
     try:
         run_script(ns.script, origin, extra, ns.hackrf_dir)
     except SystemExit:

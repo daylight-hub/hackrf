@@ -7,6 +7,7 @@ headless/background service. Callbacks are invoked from worker threads.
 from __future__ import annotations
 
 import os
+import re
 import signal
 import subprocess
 import sys
@@ -83,6 +84,43 @@ class _WindowsJob:
             pass
 
 
+class _WindowsEvents:
+    """Named events the runner waits on: Stop (graceful, like Ctrl+C) and Dump (print stacks).
+
+    Windows has no SIGINT for a windowless process. An event avoids keeping a read pending
+    on the script's stdin pipe, which on Windows can stall other I/O of that process."""
+
+    def __init__(self) -> None:
+        import ctypes
+        import uuid
+        from ctypes import wintypes
+
+        self._k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        self._k32.CreateEventW.restype = wintypes.HANDLE
+        self._k32.CreateEventW.argtypes = [ctypes.c_void_p, wintypes.BOOL, wintypes.BOOL, wintypes.LPCWSTR]
+        self._k32.SetEvent.argtypes = [wintypes.HANDLE]
+        self._k32.CloseHandle.argtypes = [wintypes.HANDLE]
+        tag = uuid.uuid4().hex
+        self.stop_name = f"Local\\rfstudio-stop-{tag}"
+        self.dump_name = f"Local\\rfstudio-dump-{tag}"
+        self.stop = self._k32.CreateEventW(None, True, False, self.stop_name)   # manual reset
+        self.dump = self._k32.CreateEventW(None, False, False, self.dump_name)  # auto reset
+
+    def set_stop(self) -> None:
+        if self.stop:
+            self._k32.SetEvent(self.stop)
+
+    def set_dump(self) -> None:
+        if self.dump:
+            self._k32.SetEvent(self.dump)
+
+    def close(self) -> None:
+        for h in (self.stop, self.dump):
+            if h:
+                self._k32.CloseHandle(h)
+        self.stop = self.dump = None
+
+
 class State(str, Enum):
     STOPPED = "stopped"
     STARTING = "starting"
@@ -139,6 +177,9 @@ class Supervisor:
         self._last_output = 0.0
         self._restart_times: deque[float] = deque()
         self._job = _WindowsJob() if IS_WINDOWS else None
+        self._events: _WindowsEvents | None = None
+        self._script_spoke = False
+        self.quiet_after_s = 30.0
 
     # ------------------------------------------------------------- public API
     @property
@@ -178,6 +219,22 @@ class Supervisor:
         if wait and thread and thread is not threading.current_thread():
             thread.join(timeout if timeout is not None else self.policy.stop_timeout_s + 5)
 
+    def dump_stacks(self) -> bool:
+        """Ask the script to print where each of its threads is (troubleshooting a silent script)."""
+        proc = self._proc
+        if proc is None or proc.poll() is not None:
+            return False
+        try:
+            if IS_WINDOWS:
+                if self._events is None:
+                    return False
+                self._events.set_dump()
+            else:
+                os.kill(proc.pid, signal.SIGUSR1)
+            return True
+        except OSError:
+            return False
+
     def restart(self) -> None:
         """Manual restart: stop the current process and start again at once."""
         with self._lock:
@@ -203,13 +260,23 @@ class Supervisor:
             pass
 
     def _spawn(self, spec: LaunchSpec) -> subprocess.Popen[bytes]:
-        env = dict(spec.env) if spec.env is not None else None
-        if IS_WINDOWS and env is not None:
-            env["RFSTUDIO_STOP_PIPE"] = "1"
+        env = dict(spec.env if spec.env is not None else os.environ)
+        env["RFSTUDIO_SUPERVISED"] = "1"
+        env["RFSTUDIO_PARENT_PID"] = str(os.getpid())
+        env.pop("RFSTUDIO_STOP_PIPE", None)
+        if IS_WINDOWS:
+            if self._events is not None:
+                self._events.close()
+            try:
+                self._events = _WindowsEvents()
+                env["RFSTUDIO_STOP_EVENT"] = self._events.stop_name
+                env["RFSTUDIO_DUMP_EVENT"] = self._events.dump_name
+            except (OSError, AttributeError):
+                self._events = None
         kwargs: dict = dict(
             cwd=spec.cwd or None,
             env=env,
-            stdin=subprocess.PIPE if IS_WINDOWS else subprocess.DEVNULL,
+            stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
         )
@@ -227,15 +294,35 @@ class Supervisor:
             self._job.assign(proc)
         return proc
 
+    def _emit(self, raw: bytes, name: str) -> None:
+        text = raw.decode("utf-8", errors="replace")
+        if not text.strip():
+            return
+        if not text.startswith("[rfstudio]"):
+            self._script_spoke = True
+        self._tail.append(text)
+        self._on_output(text, name)
+
     def _pump(self, stream, name: str) -> None:
+        """Read whatever arrives (not just whole lines) so progress shown with \\r appears too."""
+        pending = b""
+        read = getattr(stream, "read1", None) or (lambda n: stream.read(n))
         try:
-            for raw in iter(stream.readline, b""):
+            while True:
+                chunk = read(65536)
+                if not chunk:
+                    break
                 self._last_output = time.monotonic()
-                line = raw.decode("utf-8", errors="replace").rstrip("\r\n")
-                for part in line.split("\r"):
-                    if part:
-                        self._tail.append(part)
-                        self._on_output(part, name)
+                pending += chunk
+                parts = re.split(rb"\r\n|\n|\r", pending)
+                pending = parts.pop()
+                for part in parts:
+                    self._emit(part, name)
+                if len(pending) > 8192:
+                    self._emit(pending, name)
+                    pending = b""
+            if pending:
+                self._emit(pending, name)
         except (OSError, ValueError):
             pass
         finally:
@@ -249,14 +336,9 @@ class Supervisor:
             return
         timeout = max(1.0, float(self.policy.stop_timeout_s))
         if IS_WINDOWS:
-            # 1) polite: stop token on stdin -> KeyboardInterrupt in the script (cleanup runs)
-            try:
-                if proc.stdin is not None:
-                    proc.stdin.write(b"__rfstudio_stop__\n")
-                    proc.stdin.flush()
-                    proc.stdin.close()
-            except (OSError, ValueError):
-                pass
+            # 1) polite: Stop event -> KeyboardInterrupt in the script (cleanup runs)
+            if self._events is not None:
+                self._events.set_stop()
             try:
                 proc.wait(timeout * 0.75)
                 return
@@ -320,6 +402,7 @@ class Supervisor:
                 else:
                     self._proc = proc
                     self._tail.clear()
+                    self._script_spoke = False
                     self.started_at = time.monotonic()
                     self._last_output = self.started_at
                     readers = [
@@ -336,9 +419,12 @@ class Supervisor:
                     quiet_noted = False
                     while proc.poll() is None:
                         self._wake.wait(0.25)
-                        if not quiet_noted and not self._tail and time.monotonic() - self.started_at > 30:
+                        if not quiet_noted and not self._script_spoke and \
+                                time.monotonic() - self.started_at > self.quiet_after_s:
                             quiet_noted = True
-                            self._event("info", f"Still running (PID {proc.pid}) but nothing printed yet after 30 s")
+                            self._event("warning", f"The script is running (PID {proc.pid}) but hasn't printed "
+                                        f"anything for {self.quiet_after_s:.0f} s. Showing what it is doing right now:")
+                            self.dump_stacks()
                         if not self._want_running or self._restart_requested:
                             stop_seen = not self._want_running
                             break

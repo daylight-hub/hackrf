@@ -139,6 +139,7 @@ When a script stops with an error, a banner explains it in plain English with a 
 | **The HackRF is in use by another program** | Close other SDR software (GQRX, SDR++, `hackrf_transfer`, the background service) and press Start. |
 | **No HackRF found** | Plug it in directly (not through a hub) and press Device → *Detect devices*. |
 | **The script needs Python package(s) …** | numpy, scipy and pyhackrf2 are already included. Add any other package to `scripts/requirements.txt` and push, so the next build includes it. The app stops instead of restarting over and over, because a restart can't install a package. |
+| **The script runs but prints nothing** | After 30 s the app shows where the script is waiting (which function and line), and the 🔍 button in the console shows it again at any time. Send that output when asking for help. |
 | **The script isn't allowed to write a file** | Relative paths go to the working folder (below). |
 
 Errors a restart can't fix, such as a syntax error or a missing package, stop the script instead of restarting it over and over.

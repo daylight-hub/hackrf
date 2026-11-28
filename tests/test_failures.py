@@ -372,3 +372,56 @@ def test_preparation_data_includes_main_script(monkeypatch):
     runner.install_multiprocessing_support(force=True)
     data = spawn.get_preparation_data("w")
     assert data["init_main_from_path"] == os.path.abspath(sys.modules["__main__"].__file__)
+
+
+# --------------------------------------------- silent scripts / diagnostics
+
+def _supervise(script, **kw):
+    lines: list[tuple[str, str]] = []
+    events: list[str] = []
+    sup = Supervisor(lambda: session.prepare_launch(config.Settings(), script),
+                     config.SupervisorSettings(stop_timeout_s=5),
+                     on_output=lambda line, st: lines.append((line, st)),
+                     on_event=lambda lvl, m: events.append(m), **kw)
+    return sup, lines, events
+
+
+def _wait(cond, timeout=20):
+    end = time.time() + timeout
+    while time.time() < end:
+        if cond():
+            return True
+        time.sleep(0.05)
+    return False
+
+
+def test_startup_line_and_stack_dump_of_silent_script(tmp_path):
+    script = tmp_path / "quiet_app.py"
+    script.write_text("import time\n\ndef wait_for_radio():\n    time.sleep(60)\n\n"
+                      "try:\n    wait_for_radio()\nfinally:\n    print('cleanup', flush=True)\n")
+    sup, lines, events = _supervise(script)
+    sup.quiet_after_s = 1.5
+    sup.start()
+    try:
+        assert _wait(lambda: any(t.startswith("[rfstudio] Python") and "quiet_app.py" in t for t, _ in lines))
+        # automatic dump once it has been quiet for a while
+        assert _wait(lambda: any("hasn't printed anything" in e for e in events))
+        assert _wait(lambda: any("wait_for_radio" in t for t, _ in lines)), lines
+        n = len(lines)
+        assert sup.dump_stacks()  # and on demand
+        assert _wait(lambda: any("wait_for_radio" in t for t, _ in lines[n:]))
+    finally:
+        sup.stop()
+    assert any(t == "cleanup" for t, _ in lines)
+
+
+def test_progress_lines_with_carriage_returns(tmp_path):
+    script = tmp_path / "progress.py"
+    script.write_text("import sys, time\nfor i in range(3):\n    sys.stdout.write(f'\\rscanning {i}')\n"
+                      "    sys.stdout.flush()\n    time.sleep(0.2)\nprint()\nprint('done')\n")
+    sup, lines, _ = _supervise(script)
+    sup.policy.restart_policy = config.RESTART_NEVER
+    sup.start()
+    assert _wait(lambda: not sup.is_active)
+    texts = [t for t, _ in lines if not t.startswith("[rfstudio]")]
+    assert texts == ["scanning 0", "scanning 1", "scanning 2", "done"]

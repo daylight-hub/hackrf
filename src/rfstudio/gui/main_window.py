@@ -368,6 +368,8 @@ class MainWindow(QMainWindow):
         ll.addWidget(self.options, 1)
         split.addWidget(left)
         self.console = ConsoleView(self.settings.ui.console_max_lines)
+        self.console.add_tool("search", "Show what the running script is doing right now (troubleshooting)",
+                              self._dump_script)
         split.addWidget(self.console)
         split.setStretchFactor(0, 11)
         split.setStretchFactor(1, 9)
@@ -631,6 +633,10 @@ class MainWindow(QMainWindow):
             self.tray.showMessage(APP_NAME, f"{self.script_path.name} finished. {text}",
                                   QSystemTrayIcon.Information, 5000)
 
+    def _dump_script(self) -> None:
+        if not self.supervisor.dump_stacks():
+            self.console.append("The script isn't running.", "warning")
+
     def _open_workdir(self) -> None:
         if self.script_path:
             QDesktopServices.openUrl(QUrl.fromLocalFile(str(session.working_dir(self.script_path))))
@@ -663,7 +669,7 @@ class MainWindow(QMainWindow):
 
     def _on_output(self, line: str, stream: str) -> None:  # supervisor thread
         self._recent_output.append(line)
-        self.console.append(line, stream)
+        self.console.append(line, "info" if line.startswith("[rfstudio]") else stream)
         if self._logger:
             self._logger.info(("! " if stream == "stderr" else "  ") + line)
 
